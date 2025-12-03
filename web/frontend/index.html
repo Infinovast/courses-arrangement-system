@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能排课系统</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        dark: { 900: '#0a0a0f', 800: '#12121a', 700: '#1a1a24', 600: '#24242f' },
+                        accent: { 500: '#6366f1', 400: '#818cf8', 300: '#a5b4fc' },
+                        cyber: { 500: '#06b6d4', 400: '#22d3ee' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a24;
+            --bg-card: #24242f;
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --border-color: rgba(255,255,255,0.05);
+            --glass-bg: rgba(255,255,255,0.03);
+            --glass-strong-bg: rgba(255,255,255,0.06);
+            --scrollbar-color: #374151;
+        }
+        html.theme-light, html.theme-light body, .theme-light, #app.theme-light {
+            --bg-primary: #f8fafc !important;
+            --bg-secondary: #f1f5f9 !important;
+            --bg-tertiary: #e2e8f0 !important;
+            --bg-card: #ffffff !important;
+            --text-primary: #1e293b !important;
+            --text-secondary: #475569 !important;
+            --text-muted: #64748b !important;
+            --border-color: rgba(0,0,0,0.08) !important;
+            --glass-bg: rgba(255,255,255,0.7) !important;
+            --glass-strong-bg: rgba(255,255,255,0.85) !important;
+            --scrollbar-color: #cbd5e1 !important;
+            background: #f8fafc !important;
+            color: #1e293b !important;
+        }
+        * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-color) transparent; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--scrollbar-color); border-radius: 3px; }
+        body, #app { background: var(--bg-primary); color: var(--text-primary); transition: background 0.3s, color 0.3s; }
+        .glass { background: var(--glass-bg); backdrop-filter: blur(20px); border: 1px solid var(--border-color); }
+        .glass-strong { background: var(--glass-strong-bg); backdrop-filter: blur(30px); border: 1px solid var(--border-color); }
+        .theme-light .glass, .theme-light .glass-strong { box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .glow { box-shadow: 0 0 40px rgba(99,102,241,0.15); }
+        .glow-cyan { box-shadow: 0 0 30px rgba(6,182,212,0.2); }
+        .gradient-border { background: linear-gradient(135deg, rgba(99,102,241,0.3), rgba(6,182,212,0.3)); padding: 1px; }
+        .gradient-text { background: linear-gradient(135deg, #818cf8, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .theme-light .gradient-text { background: linear-gradient(135deg, #6366f1, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .pulse-dot { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .hover-lift { transition: all 0.3s ease; }
+        .hover-lift:hover { transform: translateY(-2px); box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+        .theme-light .hover-lift:hover { box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+        .schedule-grid { display: grid; grid-template-columns: 80px repeat(5, 1fr); }
+        .time-slot { min-height: 50px; }
+        .course-block { transition: all 0.2s ease; cursor: pointer; }
+        .course-block:hover { transform: scale(1.02); z-index: 10; }
+        input, select, textarea { transition: all 0.2s ease; }
+        input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 2px rgba(99,102,241,0.3); }
+        /* 亮色主题输入框 */
+        .theme-light input, .theme-light select, .theme-light textarea { 
+            background: var(--bg-card) !important; 
+            border-color: var(--border-color) !important;
+            color: var(--text-primary) !important;
+        }
+        .theme-light .bg-dark-700, .theme-light .bg-dark-800, .theme-light .bg-dark-900 {
+            background: var(--bg-tertiary) !important;
+        }
+        .theme-light .text-gray-100, .theme-light .text-gray-200, .theme-light .text-gray-300 {
+            color: var(--text-primary) !important;
+        }
+        .theme-light .text-gray-400, .theme-light .text-gray-500 {
+            color: var(--text-secondary) !important;
+        }
+        .theme-light .border-gray-700, .theme-light .border-gray-800 {
+            border-color: var(--border-color) !important;
+        }
+        .theme-light .divide-gray-800 > :not([hidden]) ~ :not([hidden]) {
+            border-color: var(--border-color) !important;
+        }
+        /* 亮色主题背景装饰 */
+        .theme-light .bg-accent-500\/10 {
+            background: rgba(99,102,241,0.05) !important;
+        }
+        .theme-light .bg-cyber-500\/10 {
+            background: rgba(6,182,212,0.05) !important;
+        }
+        /* 主题切换下拉菜单 */
+        .theme-dropdown { position: relative; }
+        .theme-dropdown-menu { 
+            position: absolute; right: 0; top: 100%; margin-top: 8px;
+            min-width: 160px; border-radius: 12px; overflow: hidden;
+            opacity: 0; visibility: hidden; transform: translateY(-10px);
+            transition: all 0.2s ease; z-index: 9999;
+            background: rgba(20, 20, 30, 0.95) !important;
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .theme-light .theme-dropdown-menu {
+            background: rgba(255, 255, 255, 0.95) !important;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+        .theme-dropdown:hover .theme-dropdown-menu {
+            opacity: 1; visibility: visible; transform: translateY(0);
+        }
+        .color-picker-wrapper { position: relative; }
+        .color-picker-wrapper input[type="color"] {
+            position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer;
+        }
+    </style>
+    <script>
+        // 页面加载时立即设置主题，避免闪烁
+        (function() {
+            const theme = localStorage.getItem('theme') || 'dark';
+            if (theme === 'light') {
+                document.documentElement.classList.add('theme-light');
+            } else if (theme === 'custom') {
+                const color = localStorage.getItem('customColor') || '#6366f1';
+                const hex2rgb = (hex) => {
+                    const r = parseInt(hex.slice(1, 3), 16);
+                    const g = parseInt(hex.slice(3, 5), 16);
+                    const b = parseInt(hex.slice(5, 7), 16);
+                    return { r, g, b };
+                };
+                const rgb = hex2rgb(color);
+                const root = document.documentElement;
+                root.style.setProperty('--bg-primary', `rgb(${Math.floor(rgb.r * 0.08)}, ${Math.floor(rgb.g * 0.08)}, ${Math.floor(rgb.b * 0.15)})`);
+                root.style.setProperty('--bg-secondary', `rgb(${Math.floor(rgb.r * 0.12)}, ${Math.floor(rgb.g * 0.12)}, ${Math.floor(rgb.b * 0.2)})`);
+                root.style.setProperty('--bg-tertiary', `rgb(${Math.floor(rgb.r * 0.18)}, ${Math.floor(rgb.g * 0.18)}, ${Math.floor(rgb.b * 0.28)})`);
+                root.style.setProperty('--glass-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.05)`);
+                root.style.setProperty('--glass-strong-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.1)`);
+                root.style.setProperty('--border-color', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`);
+                root.style.setProperty('--scrollbar-color', color);
+            }
+        })();
+    </script>
+</head>
+<body class="font-sans min-h-screen">
+    <div id="app" :class="['min-h-screen transition-colors duration-300', currentTheme === 'light' ? 'theme-light' : '']" :style="currentTheme === 'custom' ? customThemeStyle : {}">
+        <!-- 背景装饰 -->
+        <div class="fixed inset-0 overflow-hidden pointer-events-none">
+            <div class="absolute top-0 left-1/4 w-96 h-96 bg-accent-500/10 rounded-full blur-3xl"></div>
+            <div class="absolute bottom-0 right-1/4 w-96 h-96 bg-cyber-500/10 rounded-full blur-3xl"></div>
+        </div>
+
+        <div class="relative flex h-screen">
+            <!-- 侧边导航 -->
+            <nav :class="['glass-strong flex flex-col py-6 space-y-2 relative z-40 transition-all duration-300',
+                sidebarExpanded ? 'w-56' : 'w-20 items-center']">
+                <!-- Logo 和 展开/收起按钮 -->
+                <div :class="['flex items-center mb-6', sidebarExpanded ? 'px-4 justify-between' : 'flex-col space-y-4']">
+                    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent-500 to-cyber-500 flex items-center justify-center glow flex-shrink-0">
+                        <i class="fas fa-calendar-alt text-xl"></i>
+                    </div>
+                    <button @click="sidebarExpanded = !sidebarExpanded" 
+                        class="w-8 h-8 rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center">
+                        <i :class="sidebarExpanded ? 'fas fa-chevron-left' : 'fas fa-chevron-right'" class="text-gray-400 text-sm"></i>
+                    </button>
+                </div>
+                <!-- 导航项 -->
+                <button v-for="(item, index) in navItems" :key="index"
+                    @click="currentView = item.view"
+                    :class="[sidebarExpanded 
+                        ? 'mx-3 px-4 py-3 rounded-xl flex items-center transition-all duration-300' 
+                        : 'w-14 h-14 mx-auto rounded-xl flex items-center justify-center transition-all duration-300 group relative',
+                        currentView === item.view ? 'bg-accent-500/20 text-accent-400' : 'text-gray-500 hover:text-gray-300 hover:bg-white/5']">
+                    <i :class="item.icon" class="text-lg"></i>
+                    <span v-if="sidebarExpanded" class="ml-3">{{ item.name }}</span>
+                    <span v-else class="absolute left-full ml-3 px-3 py-1.5 bg-dark-700 text-sm rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none shadow-xl border border-gray-700">
+                        {{ item.name }}
+                    </span>
+                </button>
+            </nav>
+
+            <!-- 主内容区 -->
+            <main class="flex-1 overflow-hidden flex flex-col">
+                <!-- 顶部栏 -->
+                <header class="h-16 glass flex items-center justify-between px-8 relative z-50">
+                    <div>
+                        <h1 class="text-xl font-semibold gradient-text">{{ currentTitle }}</h1>
+                        <p class="text-xs text-gray-500 mt-0.5">智能排课管理系统 v1.0</p>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div v-if="latestSession" class="flex items-center space-x-2 text-sm">
+                            <span class="w-2 h-2 rounded-full pulse-dot" :class="latestSession.status === 'completed' ? 'bg-green-400' : latestSession.status === 'failed' ? 'bg-red-400' : 'bg-yellow-400'"></span>
+                            <span class="text-gray-400">{{ getStatusText(latestSession.status) }}</span>
+                        </div>
+                        <!-- 主题切换 -->
+                        <div class="theme-dropdown">
+                            <button class="w-10 h-10 rounded-xl glass hover:bg-white/10 transition-colors flex items-center justify-center">
+                                <i :class="currentTheme === 'light' ? 'fas fa-sun text-yellow-400' : currentTheme === 'custom' ? 'fas fa-palette' : 'fas fa-moon text-gray-400'" :style="currentTheme === 'custom' ? {color: customColor} : {}"></i>
+                            </button>
+                            <div class="theme-dropdown-menu">
+                                <button @click.stop="setTheme('dark')" 
+                                    :class="['w-full px-4 py-3 flex items-center space-x-3 hover:bg-white/10 transition-colors', currentTheme === 'dark' ? 'text-accent-400' : 'text-gray-400']">
+                                    <i class="fas fa-moon w-4"></i>
+                                    <span class="text-sm">暗色主题</span>
+                                </button>
+                                <button @click.stop="setTheme('light')" 
+                                    :class="['w-full px-4 py-3 flex items-center space-x-3 hover:bg-white/10 transition-colors', currentTheme === 'light' ? 'text-accent-400' : 'text-gray-400']">
+                                    <i class="fas fa-sun w-4"></i>
+                                    <span class="text-sm">亮色主题</span>
+                                </button>
+                                <div class="w-full px-4 py-3 flex items-center space-x-3 hover:bg-white/10 transition-colors cursor-pointer color-picker-wrapper"
+                                    :class="currentTheme === 'custom' ? 'text-accent-400' : 'text-gray-400'">
+                                    <i class="fas fa-palette w-4" :style="{color: customColor}"></i>
+                                    <span class="text-sm">自定义颜色</span>
+                                    <input type="color" v-model="customColor" @input="onCustomColorChange">
+                                </div>
+                            </div>
+                        </div>
+                        <button @click="refreshData" class="w-10 h-10 rounded-xl glass hover:bg-white/10 transition-colors flex items-center justify-center">
+                            <i class="fas fa-sync-alt text-gray-400" :class="{ 'animate-spin': loading }"></i>
+                        </button>
+                    </div>
+                </header>
+
+                <!-- 内容区域 -->
+                <div class="flex-1 overflow-auto p-8">
+                    <!-- 仪表盘 -->
+                    <div v-if="currentView === 'dashboard'" class="slide-in space-y-8">
+                        <!-- 统计卡片 -->
+                        <div class="grid grid-cols-4 gap-6">
+                            <div v-for="stat in stats" :key="stat.label" class="glass rounded-2xl p-6 hover-lift">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="text-3xl font-bold" :class="stat.color">{{ stat.value }}</p>
+                                        <p class="text-sm text-gray-500 mt-1">{{ stat.label }}</p>
+                                    </div>
+                                    <div class="w-12 h-12 rounded-xl flex items-center justify-center" :class="stat.bgColor">
+                                        <i :class="stat.icon" class="text-xl" :class="stat.color"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 快速操作 -->
+                        <div class="glass rounded-2xl p-6">
+                            <h3 class="text-lg font-medium mb-4">快速操作</h3>
+                            <div class="grid grid-cols-3 gap-4">
+                                <div class="p-6 rounded-xl bg-gradient-to-r from-accent-500 to-cyber-500 glow">
+                                    <div class="flex items-center space-x-4 mb-4">
+                                        <i class="fas fa-magic text-2xl"></i>
+                                        <div class="text-left">
+                                            <p class="font-medium">{{ scheduling ? '排课中...' : '开始排课' }}</p>
+                                            <p class="text-sm opacity-80">自动生成最优课表</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex space-x-2">
+                                        <button @click="startScheduling('first')" :disabled="scheduling"
+                                            class="flex-1 py-2 px-3 rounded-lg bg-white/20 hover:bg-white/30 transition-colors text-sm font-medium disabled:opacity-50">
+                                            <i class="fas fa-book mr-1"></i> 上册
+                                        </button>
+                                        <button @click="startScheduling('second')" :disabled="scheduling"
+                                            class="flex-1 py-2 px-3 rounded-lg bg-white/20 hover:bg-white/30 transition-colors text-sm font-medium disabled:opacity-50">
+                                            <i class="fas fa-book-open mr-1"></i> 下册
+                                        </button>
+                                    </div>
+                                </div>
+                                <button @click="currentView = 'schedule'" class="p-6 rounded-xl glass hover:bg-white/10 transition-colors flex items-center space-x-4">
+                                    <i class="fas fa-table text-2xl text-cyber-400"></i>
+                                    <div class="text-left">
+                                        <p class="font-medium">查看课表</p>
+                                        <p class="text-sm text-gray-500">浏览排课结果</p>
+                                    </div>
+                                </button>
+                                <button @click="exportExcel" :disabled="!latestSession" class="p-6 rounded-xl glass hover:bg-white/10 transition-colors flex items-center space-x-4 disabled:opacity-50">
+                                    <i class="fas fa-file-excel text-2xl text-green-400"></i>
+                                    <div class="text-left">
+                                        <p class="font-medium">导出Excel</p>
+                                        <p class="text-sm text-gray-500">下载课表文件</p>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 班级管理 -->
+                    <div v-if="currentView === 'classes'" class="slide-in space-y-6">
+                        <div class="flex justify-between items-center">
+                            <div class="flex space-x-2">
+                                <button @click="classTab = 'cohorts'" :class="['px-4 py-2 rounded-lg transition-colors', classTab === 'cohorts' ? 'bg-accent-500/20 text-accent-400' : 'text-gray-500 hover:text-gray-300']">专业年级</button>
+                                <button @click="classTab = 'admins'" :class="['px-4 py-2 rounded-lg transition-colors', classTab === 'admins' ? 'bg-accent-500/20 text-accent-400' : 'text-gray-500 hover:text-gray-300']">行政班</button>
+                            </div>
+                            <button @click="openModal(classTab === 'cohorts' ? 'cohort' : 'adminClass')" class="px-4 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors flex items-center space-x-2">
+                                <i class="fas fa-plus"></i>
+                                <span>添加</span>
+                            </button>
+                        </div>
+
+                        <!-- 专业年级列表 -->
+                        <div v-if="classTab === 'cohorts'" class="grid grid-cols-3 gap-4">
+                            <div v-for="cohort in cohorts" :key="cohort.id" class="glass rounded-xl p-5 hover-lift">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <h4 class="font-medium text-lg">{{ cohort.major }}</h4>
+                                        <p class="text-sm text-gray-500">{{ cohort.grade }} 年级</p>
+                                        <p class="text-xs text-accent-400 mt-2">{{ getAdminClassCount(cohort.id) }} 个行政班</p>
+                                    </div>
+                                    <div class="flex flex-col space-y-1">
+                                        <button @click="editCohort(cohort)" class="w-8 h-8 rounded-lg hover:bg-accent-500/20 text-gray-500 hover:text-accent-400 transition-colors flex items-center justify-center">
+                                            <i class="fas fa-edit text-sm"></i>
+                                        </button>
+                                        <button @click="deleteCohort(cohort.id)" class="w-8 h-8 rounded-lg hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors flex items-center justify-center">
+                                            <i class="fas fa-trash text-sm"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 行政班列表 -->
+                        <div v-if="classTab === 'admins'" class="glass rounded-xl overflow-hidden">
+                            <table class="w-full">
+                                <thead class="bg-dark-700">
+                                    <tr>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">专业年级</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">班级</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">人数</th>
+                                        <th class="px-6 py-4 text-right text-sm font-medium text-gray-400">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-800">
+                                    <tr v-for="ac in adminClasses" :key="ac.id" class="hover:bg-white/5 transition-colors">
+                                        <td class="px-6 py-4 text-sm">{{ getCohortName(ac.cohort_id) }}</td>
+                                        <td class="px-6 py-4 text-sm">{{ ac.class_index }} 班</td>
+                                        <td class="px-6 py-4 text-sm text-gray-400">{{ ac.student_count }} 人</td>
+                                        <td class="px-6 py-4 text-right space-x-2">
+                                            <button @click="editAdminClass(ac)" class="text-gray-500 hover:text-accent-400 transition-colors">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button @click="deleteAdminClass(ac.id)" class="text-gray-500 hover:text-red-400 transition-colors">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 教师管理 -->
+                    <div v-if="currentView === 'teachers'" class="slide-in space-y-6">
+                        <div class="flex justify-between items-center">
+                            <div class="relative">
+                                <input v-model="searchTeacher" type="text" placeholder="搜索教师..." class="pl-10 pr-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500 w-64">
+                                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"></i>
+                            </div>
+                            <button @click="openModal('teacher')" class="px-4 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors flex items-center space-x-2">
+                                <i class="fas fa-plus"></i>
+                                <span>添加教师</span>
+                            </button>
+                        </div>
+
+                        <div class="grid grid-cols-5 gap-3">
+                            <div v-for="teacher in filteredTeachers" :key="teacher.id" class="glass rounded-xl p-4 hover-lift">
+                                <div class="flex items-start justify-between">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-9 h-9 rounded-full bg-gradient-to-br from-accent-500 to-cyber-500 flex items-center justify-center text-sm font-medium flex-shrink-0">
+                                            {{ teacher.name.charAt(0) }}
+                                        </div>
+                                        <div class="min-w-0">
+                                            <h4 class="font-medium text-sm truncate">{{ teacher.name }}</h4>
+                                            <span v-if="teacher.is_campus_teacher" class="text-xs px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400">校本部</span>
+                                        </div>
+                                    </div>
+                                    <div class="flex space-x-1 flex-shrink-0">
+                                        <button @click="editTeacher(teacher)" class="text-gray-500 hover:text-accent-400 transition-colors p-1">
+                                            <i class="fas fa-edit text-xs"></i>
+                                        </button>
+                                        <button @click="deleteTeacher(teacher.id)" class="text-gray-500 hover:text-red-400 transition-colors p-1">
+                                            <i class="fas fa-trash text-xs"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 机房管理 -->
+                    <div v-if="currentView === 'rooms'" class="slide-in space-y-6">
+                        <div class="flex justify-end">
+                            <button @click="openModal('room')" class="px-4 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors flex items-center space-x-2">
+                                <i class="fas fa-plus"></i>
+                                <span>添加机房</span>
+                            </button>
+                        </div>
+
+                        <div class="grid grid-cols-4 gap-4">
+                            <div v-for="room in rooms" :key="room.id" class="glass rounded-xl p-6 hover-lift">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center space-x-4">
+                                        <div class="w-12 h-12 rounded-xl bg-cyber-500/20 flex items-center justify-center">
+                                            <i class="fas fa-desktop text-cyber-400"></i>
+                                        </div>
+                                        <div>
+                                            <h4 class="font-medium">{{ room.name }}</h4>
+                                            <p class="text-sm text-gray-500">容量 {{ room.capacity }} 人</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-col space-y-1">
+                                        <button @click="editRoom(room)" class="text-gray-500 hover:text-accent-400 transition-colors">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button @click="deleteRoom(room.id)" class="text-gray-500 hover:text-red-400 transition-colors">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 课程管理 -->
+                    <div v-if="currentView === 'courses'" class="slide-in space-y-6">
+                        <div class="flex justify-between items-center">
+                            <div class="flex space-x-4 items-center">
+                                <!-- 课程分类筛选 -->
+                                <div class="flex rounded-lg overflow-hidden border border-gray-700">
+                                    <button @click="filterCourseCategory = 'all'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterCourseCategory === 'all' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        全部
+                                    </button>
+                                    <button @click="filterCourseCategory = 'specialized'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterCourseCategory === 'specialized' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        专业课
+                                    </button>
+                                    <button @click="filterCourseCategory = 'public'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterCourseCategory === 'public' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        公共课
+                                    </button>
+                                    <button @click="filterCourseCategory = 'fixed'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterCourseCategory === 'fixed' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        固定课
+                                    </button>
+                                </div>
+                                <!-- 学期筛选 -->
+                                <div class="flex rounded-lg overflow-hidden border border-gray-700">
+                                    <button @click="filterSemester = null" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterSemester === null ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        全部
+                                    </button>
+                                    <button @click="filterSemester = 'first'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterSemester === 'first' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        上册
+                                    </button>
+                                    <button @click="filterSemester = 'second'" 
+                                        :class="['px-3 py-2 text-sm transition-colors', filterSemester === 'second' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        下册
+                                    </button>
+                                </div>
+                                <select v-model="filterCohortId" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="filterCourseCategory === 'public'">
+                                    <option :value="null">全部专业年级</option>
+                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                </select>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button @click="openModal('course')" class="px-4 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors flex items-center space-x-2">
+                                    <i class="fas fa-plus"></i>
+                                    <span>添加普通课</span>
+                                </button>
+                                <button @click="openModal('fixedCourse')" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg transition-colors flex items-center space-x-2">
+                                    <i class="fas fa-plus"></i>
+                                    <span>添加固定课</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="glass rounded-xl overflow-hidden">
+                            <table class="w-full">
+                                <thead class="bg-dark-700">
+                                    <tr>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">课程名称</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">分类</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">学期</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">专业年级</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">授课教师</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">类型/时间</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">学时/节次</th>
+                                        <th class="px-6 py-4 text-right text-sm font-medium text-gray-400">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-800">
+                                    <tr v-for="course in filteredUnifiedCourses" :key="course.category + '_' + course.id" class="hover:bg-white/5 transition-colors">
+                                        <td class="px-6 py-4 font-medium">{{ course.name }}</td>
+                                        <td class="px-6 py-4">
+                                            <span :class="['text-xs px-2 py-1 rounded-full', getCategoryClass(course.category, course.cohort_id)]">
+                                                {{ getCategoryName(course.category, course.cohort_id) }}
+                                            </span>
+                                        </td>
+                                        <td class="px-6 py-4">
+                                            <span :class="['text-xs px-2 py-1 rounded-full', getSemesterClass(course.semester)]">
+                                                {{ getSemesterName(course.semester) }}
+                                            </span>
+                                        </td>
+                                        <td class="px-6 py-4 text-sm text-gray-400">{{ course.cohort_name || '-' }}</td>
+                                        <td class="px-6 py-4 text-sm">{{ course.teacher_name || '-' }}</td>
+                                        <td class="px-6 py-4">
+                                            <span v-if="course.category === 'fixed'" class="text-xs text-gray-400">
+                                                周{{ course.day }} 第{{ course.period }}节
+                                            </span>
+                                            <span v-else :class="['text-xs px-2 py-1 rounded-full', getCourseTypeClass(course.course_type)]">
+                                                {{ getCourseTypeName(course.course_type) }}
+                                            </span>
+                                        </td>
+                                        <td class="px-6 py-4 text-sm text-gray-400">
+                                            <span v-if="course.category === 'fixed'">{{ course.duration }}节</span>
+                                            <span v-else>{{ course.theory_hours }}+{{ course.lab_hours }}</span>
+                                        </td>
+                                        <td class="px-6 py-4 text-right space-x-2">
+                                            <button @click="course.category === 'fixed' ? editFixedCourse(course) : editCourse(course)" class="text-gray-500 hover:text-accent-400 transition-colors">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button @click="course.category === 'fixed' ? deleteFixedCourse(course.id) : deleteCourse(course.id)" class="text-gray-500 hover:text-red-400 transition-colors">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 课表视图 -->
+                    <div v-if="currentView === 'schedule'" class="slide-in space-y-6">
+                        <div class="flex justify-between items-center">
+                            <div class="flex space-x-4 items-center">
+                                <!-- 学期选择 -->
+                                <div class="flex rounded-lg overflow-hidden border border-gray-700">
+                                    <button @click="selectedSemester = 'first'" 
+                                        :class="['px-4 py-2 text-sm font-medium transition-colors', selectedSemester === 'first' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        <i class="fas fa-book mr-1"></i> 上册
+                                    </button>
+                                    <button @click="selectedSemester = 'second'" 
+                                        :class="['px-4 py-2 text-sm font-medium transition-colors', selectedSemester === 'second' ? 'bg-accent-500 text-white' : 'bg-dark-700 text-gray-400 hover:text-white']">
+                                        <i class="fas fa-book-open mr-1"></i> 下册
+                                    </button>
+                                </div>
+                                <select v-model="selectedCohortForSchedule" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                    <option :value="null">选择专业年级</option>
+                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                </select>
+                                <select v-model="selectedAdminClass" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="!selectedCohortForSchedule">
+                                    <option :value="null">全部行政班</option>
+                                    <option v-for="ac in filteredAdminClassesForSchedule" :key="ac.id" :value="ac.id">{{ ac.class_index }} 班</option>
+                                </select>
+                                <select v-model="selectedWeek" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                    <option v-for="w in 17" :key="w" :value="w">第 {{ w }} 周</option>
+                                </select>
+                            </div>
+                            <div class="flex space-x-3">
+                                <button @click="startScheduling('first')" :disabled="scheduling"
+                                    class="px-4 py-2 text-sm font-medium bg-gradient-to-r from-accent-500 to-accent-600 hover:from-accent-600 hover:to-accent-700 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 shadow-lg shadow-accent-500/20">
+                                    <i :class="scheduling ? 'fas fa-spinner fa-spin' : 'fas fa-magic'"></i>
+                                    <span>{{ scheduling ? '排课中...' : '排课(上册)' }}</span>
+                                </button>
+                                <button @click="startScheduling('second')" :disabled="scheduling"
+                                    class="px-4 py-2 text-sm font-medium bg-gradient-to-r from-cyber-500 to-cyber-600 hover:from-cyber-600 hover:to-cyber-700 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 shadow-lg shadow-cyber-500/20">
+                                    <i :class="scheduling ? 'fas fa-spinner fa-spin' : 'fas fa-magic'"></i>
+                                    <span>{{ scheduling ? '排课中...' : '排课(下册)' }}</span>
+                                </button>
+                                <button @click="exportExcel" :disabled="!latestSession" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors flex items-center space-x-2 disabled:opacity-50">
+                                    <i class="fas fa-download"></i>
+                                    <span>导出Excel</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 当前会话信息 -->
+                        <div v-if="latestSession" class="glass rounded-xl p-4 flex items-center justify-between">
+                            <div class="flex items-center space-x-4">
+                                <span class="w-2 h-2 rounded-full" :class="latestSession.status === 'completed' ? 'bg-green-400' : latestSession.status === 'failed' ? 'bg-red-400' : 'bg-yellow-400'"></span>
+                                <span class="text-sm text-gray-400">当前课表: {{ latestSession.semester === 'first' ? '上册' : '下册' }}</span>
+                                <span class="text-xs text-gray-500">{{ latestSession.message }}</span>
+                            </div>
+                            <span class="text-xs text-gray-500">{{ formatDate(latestSession.created_at) }}</span>
+                        </div>
+
+                        <!-- 课表网格 -->
+                        <div v-if="latestSession" class="glass rounded-2xl p-6 overflow-auto">
+                            <div class="schedule-grid min-w-[900px]">
+                                <!-- 表头 -->
+                                <div class="bg-dark-700 rounded-tl-lg p-3 text-center text-sm font-medium text-gray-400">节次</div>
+                                <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
+                                
+                                <!-- 时间槽 -->
+                                <template v-for="period in 11" :key="period">
+                                    <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
+                                    <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative" @click="openSlotDetail(day, period)">
+                                        <div v-for="course in getCoursesAt(day, period)" :key="course.id"
+                                            class="course-block rounded-lg p-2 text-xs mb-1"
+                                            :class="course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30'">
+                                            <p class="font-medium truncate">{{ course.course_name }}</p>
+                                            <p class="text-gray-400 truncate">{{ course.teacher_name }}</p>
+                                            <p v-if="course.admin_class_id" class="text-gray-500 truncate text-[10px]">{{ getAdminClassName(course.admin_class_id) }}</p>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        
+                        <!-- 无排课记录提示 -->
+                        <div v-else class="glass rounded-2xl p-12 text-center">
+                            <i class="fas fa-calendar-times text-4xl text-gray-600 mb-4"></i>
+                            <p class="text-gray-400">该学期暂无排课记录</p>
+                            <p class="text-sm text-gray-500 mt-2">请在仪表盘页面点击“开始排课”进行排课</p>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 模态框 -->
+        <div v-if="showModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 fade-in" @click.self="closeModal">
+            <div class="glass-strong rounded-2xl p-8 w-full max-w-lg slide-in">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-semibold">{{ modalTitle }}</h3>
+                    <button @click="closeModal" class="w-8 h-8 rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <!-- 专业年级表单 -->
+                <form v-if="modalType === 'cohort'" @submit.prevent="saveCohort" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">专业名称</label>
+                        <input v-model="form.major" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">年级</label>
+                        <input v-model.number="form.grade" type="number" min="1" max="6" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
+                </form>
+
+                <!-- 行政班表单 -->
+                <form v-if="modalType === 'adminClass'" @submit.prevent="saveAdminClass" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">专业年级</label>
+                        <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                            <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">班级序号</label>
+                        <input v-model.number="form.class_index" type="number" min="1" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">学生人数</label>
+                        <input v-model.number="form.student_count" type="number" min="1" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
+                </form>
+
+                <!-- 教师表单 -->
+                <form v-if="modalType === 'teacher'" @submit.prevent="saveTeacher" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">教师姓名</label>
+                        <input v-model="form.name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <input v-model="form.is_campus_teacher" type="checkbox" id="isCampus" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-accent-500 focus:ring-accent-500">
+                        <label for="isCampus" class="text-sm">校本部教师</label>
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
+                </form>
+
+                <!-- 机房表单 -->
+                <form v-if="modalType === 'room'" @submit.prevent="saveRoom" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">机房名称</label>
+                        <input v-model="form.name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">容量</label>
+                        <input v-model.number="form.capacity" type="number" min="1" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
+                </form>
+
+                <!-- 课程表单 -->
+                                <!-- 固定课程表单 -->
+                                <form v-if="modalType === 'fixedCourse'" @submit.prevent="saveFixedCourse" class="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div class="col-span-2">
+                                            <label class="block text-sm text-gray-400 mb-2">课程名称</label>
+                                            <input v-model="form.course_name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：大学英语、体育">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm text-gray-400 mb-2">专业年级</label>
+                                            <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm text-gray-400 mb-2">教师姓名</label>
+                                            <input v-model="form.teacher_name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：外聘教师1">
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-3 gap-4">
+                                        <div>
+                                            <label class="block text-sm text-gray-400 mb-2">星期几</label>
+                                            <select v-model.number="form.day" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                                <option :value="1">周一</option>
+                                                <option :value="2">周二</option>
+                                                <option :value="3">周三</option>
+                                                <option :value="4">周四</option>
+                                                <option :value="5">周五</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm text-gray-400 mb-2">开始节次</label>
+                                            <select v-model.number="form.period" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                                <option v-for="p in 11" :key="p" :value="p">第 {{ p }} 节</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm text-gray-400 mb-2">连上节数</label>
+                                            <select v-model.number="form.duration" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                                <option :value="1">1节</option>
+                                                <option :value="2">2节</option>
+                                                <option :value="3">3节</option>
+                                                <option :value="4">4节</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-gray-400 mb-2">上课周次（用逗号分隔，如: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16）</label>
+                                        <input v-model="form.weeks_str" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-gray-400 mb-2">子组标签（可选，用于区分不同时间上课的同一课程）</label>
+                                        <input v-model="form.group_tag" type="text" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：A, B">
+                                    </div>
+                                    <button type="submit" class="w-full py-3 bg-cyan-600 hover:bg-cyan-700 rounded-lg transition-colors font-medium">保存固定课</button>
+                                </form>
+
+                                <!-- 普通课程表单 -->
+                                <form v-if="modalType === 'course'" @submit.prevent="saveCourse" class="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="col-span-2">
+                            <label class="block text-sm text-gray-400 mb-2">课程名称</label>
+                            <input v-model="form.name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">学期</label>
+                            <select v-model="form.semester" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                <option value="first">上册</option>
+                                <option value="second">下册</option>
+                                <option value="both">全年</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">专业年级</label>
+                            <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">授课教师</label>
+                            <select v-model.number="form.teacher_id" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                <option :value="null">未指定</option>
+                                <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">课程类型</label>
+                            <select v-model="form.course_type" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                <option value="theory_only">纯理论</option>
+                                <option value="lab_only">纯实验</option>
+                                <option value="mixed">理论+实验</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">理论学时</label>
+                            <input v-model.number="form.theory_hours" type="number" min="0" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">实验学时</label>
+                            <input v-model.number="form.lab_hours" type="number" min="0" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-2">教学班数</label>
+                            <input v-model.number="form.teaching_class_count" type="number" min="0.5" step="0.5" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        </div>
+                    </div>
+                    
+                    <!-- 双教师配置 -->
+                    <div class="border-t border-gray-700 pt-4">
+                        <div class="flex items-center space-x-3 mb-4">
+                            <input v-model="form.dual_teacher_enabled" type="checkbox" id="dualTeacher" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-accent-500 focus:ring-accent-500">
+                            <label for="dualTeacher" class="text-sm">双教师授课 (A教师1-8周，B教师9-16周)</label>
+                        </div>
+                        <div v-if="form.dual_teacher_enabled" class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-2">第二位教师</label>
+                                <select v-model.number="form.second_teacher_id" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                    <option :value="null">未指定</option>
+                                    <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-2">切换周次</label>
+                                <input v-model.number="form.teacher_split_week" type="number" min="1" max="15" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="默认8">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Toast 通知 -->
+        <div v-if="toast.show" class="fixed bottom-8 right-8 z-50 slide-in">
+            <div :class="['px-6 py-4 rounded-xl shadow-lg flex items-center space-x-3', toast.type === 'success' ? 'bg-green-500/90' : 'bg-red-500/90']">
+                <i :class="toast.type === 'success' ? 'fas fa-check-circle' : 'fas fa-exclamation-circle'"></i>
+                <span>{{ toast.message }}</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/v1';
+
+        const { createApp, ref, computed, onMounted, watch } = Vue;
+
+        createApp({
+            setup() {
+                // 状态
+                const currentView = ref('dashboard');
+                const loading = ref(false);
+                const scheduling = ref(false);
+                const showModal = ref(false);
+                const modalType = ref('');
+                const classTab = ref('cohorts');
+                const searchTeacher = ref('');
+                const filterCohortId = ref(null);
+                const filterSemester = ref(null);
+                const filterCourseCategory = ref('all');  // 'all'=全部, 'regular'=普通课, 'fixed'=固定课
+                const selectedCohortForSchedule = ref(null);
+                const selectedAdminClass = ref(null);
+                const selectedWeek = ref(1);
+                const selectedSemester = ref('first');
+                const sidebarExpanded = ref(false);
+                
+                // 主题 - 初始化
+                const savedTheme = localStorage.getItem('theme');
+                const currentTheme = ref(savedTheme && ['dark', 'light', 'custom'].includes(savedTheme) ? savedTheme : 'dark');
+                const customColor = ref(localStorage.getItem('customColor') || '#6366f1');
+                
+                // 将自定义主题应用到 document.documentElement
+                const applyCustomTheme = (color) => {
+                    const hex2rgb = (hex) => {
+                        const r = parseInt(hex.slice(1, 3), 16);
+                        const g = parseInt(hex.slice(3, 5), 16);
+                        const b = parseInt(hex.slice(5, 7), 16);
+                        return { r, g, b };
+                    };
+                    const rgb = hex2rgb(color);
+                    const root = document.documentElement;
+                    root.style.setProperty('--bg-primary', `rgb(${Math.floor(rgb.r * 0.08)}, ${Math.floor(rgb.g * 0.08)}, ${Math.floor(rgb.b * 0.15)})`);
+                    root.style.setProperty('--bg-secondary', `rgb(${Math.floor(rgb.r * 0.12)}, ${Math.floor(rgb.g * 0.12)}, ${Math.floor(rgb.b * 0.2)})`);
+                    root.style.setProperty('--bg-tertiary', `rgb(${Math.floor(rgb.r * 0.18)}, ${Math.floor(rgb.g * 0.18)}, ${Math.floor(rgb.b * 0.28)})`);
+                    root.style.setProperty('--glass-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.05)`);
+                    root.style.setProperty('--glass-strong-bg', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.1)`);
+                    root.style.setProperty('--border-color', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`);
+                    root.style.setProperty('--scrollbar-color', color);
+                };
+                
+                // 清除自定义主题样式
+                const clearCustomTheme = () => {
+                    const root = document.documentElement;
+                    root.style.removeProperty('--bg-primary');
+                    root.style.removeProperty('--bg-secondary');
+                    root.style.removeProperty('--bg-tertiary');
+                    root.style.removeProperty('--glass-bg');
+                    root.style.removeProperty('--glass-strong-bg');
+                    root.style.removeProperty('--border-color');
+                    root.style.removeProperty('--scrollbar-color');
+                };
+                
+                const setTheme = (theme) => {
+                    currentTheme.value = theme;
+                    localStorage.setItem('theme', theme);
+                    // 同步更新 html 元素的 class 和样式
+                    document.documentElement.classList.remove('theme-light');
+                    if (theme === 'light') {
+                        document.documentElement.classList.add('theme-light');
+                        clearCustomTheme();
+                    } else if (theme === 'custom') {
+                        applyCustomTheme(customColor.value);
+                    } else {
+                        clearCustomTheme();
+                    }
+                };
+                
+                const onCustomColorChange = (e) => {
+                    customColor.value = e.target.value;
+                    localStorage.setItem('customColor', customColor.value);
+                    setTheme('custom');
+                };
+                
+                // 自定义主题样式 (Vue绑定用)
+                const customThemeStyle = computed(() => ({}));
+
+                // 数据
+                const cohorts = ref([]);
+                const adminClasses = ref([]);
+                const teachers = ref([]);
+                const rooms = ref([]);
+                const courses = ref([]);
+                const fixedCourses = ref([]);
+                const unifiedCourses = ref([]);
+                const scheduleResults = ref([]);
+                const latestSession = ref(null);
+
+                // 表单
+                const form = ref({});
+
+                // Toast
+                const toast = ref({ show: false, message: '', type: 'success' });
+
+                // 导航项
+                const navItems = [
+                    { name: '仪表盘', icon: 'fas fa-th-large', view: 'dashboard' },
+                    { name: '班级管理', icon: 'fas fa-users', view: 'classes' },
+                    { name: '教师管理', icon: 'fas fa-chalkboard-teacher', view: 'teachers' },
+                    { name: '机房管理', icon: 'fas fa-desktop', view: 'rooms' },
+                    { name: '课程管理', icon: 'fas fa-book', view: 'courses' },
+                    { name: '课表查看', icon: 'fas fa-calendar-week', view: 'schedule' }
+                ];
+
+                // 计算属性
+                const currentTitle = computed(() => {
+                    const item = navItems.find(i => i.view === currentView.value);
+                    return item ? item.name : '';
+                });
+
+                const stats = computed(() => [
+                    { label: '专业年级', value: cohorts.value.length, icon: 'fas fa-graduation-cap', color: 'text-accent-400', bgColor: 'bg-accent-500/20' },
+                    { label: '教师数量', value: teachers.value.length, icon: 'fas fa-user-tie', color: 'text-cyber-400', bgColor: 'bg-cyber-500/20' },
+                    { label: '课程数量', value: courses.value.length, icon: 'fas fa-book-open', color: 'text-green-400', bgColor: 'bg-green-500/20' },
+                    { label: '机房数量', value: rooms.value.length, icon: 'fas fa-server', color: 'text-orange-400', bgColor: 'bg-orange-500/20' }
+                ]);
+
+                const filteredTeachers = computed(() => {
+                    if (!searchTeacher.value) return teachers.value;
+                    return teachers.value.filter(t => t.name.includes(searchTeacher.value));
+                });
+
+                const filteredCourses = computed(() => {
+                    let result = courses.value;
+                    if (filterSemester.value) {
+                        result = result.filter(c => c.semester === filterSemester.value || c.semester === 'both');
+                    }
+                    if (filterCohortId.value) {
+                        result = result.filter(c => c.cohort_id === filterCohortId.value);
+                    }
+                    return result;
+                });
+
+                const filteredUnifiedCourses = computed(() => {
+                    let result = unifiedCourses.value;
+                    // 按分类筛选
+                    if (filterCourseCategory.value === 'specialized') {
+                        // 专业课: 有cohort_id的普通课
+                        result = result.filter(c => c.category === 'regular' && c.cohort_id);
+                    } else if (filterCourseCategory.value === 'public') {
+                        // 公共课: 没有cohort_id的普通课
+                        result = result.filter(c => c.category === 'regular' && !c.cohort_id);
+                    } else if (filterCourseCategory.value === 'fixed') {
+                        result = result.filter(c => c.category === 'fixed');
+                    }
+                    // 按学期筛选
+                    if (filterSemester.value) {
+                        result = result.filter(c => c.semester === filterSemester.value || c.semester === 'both');
+                    }
+                    // 按专业年级筛选
+                    if (filterCohortId.value) {
+                        result = result.filter(c => c.cohort_id === filterCohortId.value);
+                    }
+                    return result;
+                });
+
+                const filteredAdminClassesForSchedule = computed(() => {
+                    if (!selectedCohortForSchedule.value) return [];
+                    return adminClasses.value.filter(ac => ac.cohort_id === selectedCohortForSchedule.value);
+                });
+
+                const modalTitle = computed(() => {
+                    const titles = {
+                        cohort: form.value.id ? '编辑专业年级' : '添加专业年级',
+                        adminClass: form.value.id ? '编辑行政班' : '添加行政班',
+                        teacher: form.value.id ? '编辑教师' : '添加教师',
+                        room: form.value.id ? '编辑机房' : '添加机房',
+                        course: form.value.id ? '编辑课程' : '添加课程',
+                        fixedCourse: form.value.id ? '编辑固定课' : '添加固定课'
+                    };
+                    return titles[modalType.value] || '';
+                });
+
+                // API 请求
+                const api = async (url, options = {}) => {
+                    try {
+                        const res = await fetch(API_BASE + url, {
+                            headers: { 'Content-Type': 'application/json' },
+                            ...options
+                        });
+                        if (!res.ok) {
+                            const err = await res.json();
+                            throw new Error(err.detail || '请求失败');
+                        }
+                        if (res.status === 204) return null;
+                        return await res.json();
+                    } catch (e) {
+                        showToast(e.message, 'error');
+                        throw e;
+                    }
+                };
+
+                // 加载数据
+                const loadCohorts = async () => { cohorts.value = await api('/classes/cohorts'); };
+                const loadAdminClasses = async () => { adminClasses.value = await api('/classes/admin-classes'); };
+                const loadTeachers = async () => { teachers.value = await api('/teachers'); };
+                const loadRooms = async () => { rooms.value = await api('/rooms'); };
+                const loadCourses = async () => { courses.value = await api('/courses'); };
+                const loadFixedCourses = async () => { fixedCourses.value = await api('/courses/fixed/list'); };
+                const loadUnifiedCourses = async () => { unifiedCourses.value = await api('/courses/all/unified'); };
+                const loadLatestSession = async () => {
+                    const params = new URLSearchParams();
+                    if (selectedSemester.value) params.append('semester', selectedSemester.value);
+                    latestSession.value = await api(`/schedule/sessions/latest?${params}`);
+                    if (!latestSession.value) {
+                        scheduleResults.value = [];
+                    }
+                };
+                const loadScheduleResults = async () => {
+                    if (!latestSession.value) return;
+                    try {
+                        const params = new URLSearchParams();
+                        if (selectedWeek.value) params.append('week', selectedWeek.value);
+                        if (selectedCohortForSchedule.value) params.append('cohort_id', selectedCohortForSchedule.value);
+                        if (selectedAdminClass.value) params.append('admin_class_id', selectedAdminClass.value);
+                        scheduleResults.value = await api(`/schedule/results/${latestSession.value.session_id}?${params}`);
+                    } catch {}
+                };
+
+                const refreshData = async () => {
+                    loading.value = true;
+                    await Promise.all([loadCohorts(), loadAdminClasses(), loadTeachers(), loadRooms(), loadCourses(), loadFixedCourses(), loadUnifiedCourses(), loadLatestSession()]);
+                    loading.value = false;
+                };
+
+                // 辅助函数
+                const getCohortName = (id) => {
+                    const c = cohorts.value.find(x => x.id === id);
+                    return c ? `${c.major} ${c.grade}年级` : '-';
+                };
+
+                const getAdminClassCount = (cohortId) => adminClasses.value.filter(a => a.cohort_id === cohortId).length;
+
+                const getAdminClassName = (adminClassId) => {
+                    const ac = adminClasses.value.find(x => x.id === adminClassId);
+                    if (!ac) return '';
+                    const cohort = cohorts.value.find(c => c.id === ac.cohort_id);
+                    return cohort ? `${cohort.major}${ac.class_index}班` : `${ac.class_index}班`;
+                };
+
+                const getCourseTypeName = (type) => ({ theory_only: '理论', lab_only: '实验', mixed: '混合' }[type] || type);
+                const getCourseTypeClass = (type) => ({
+                    theory_only: 'bg-blue-500/20 text-blue-400',
+                    lab_only: 'bg-cyan-500/20 text-cyan-400',
+                    mixed: 'bg-purple-500/20 text-purple-400'
+                }[type] || 'bg-gray-500/20 text-gray-400');
+                
+                const getSemesterName = (semester) => ({ first: '上册', second: '下册', both: '全年' }[semester] || '上册');
+                const getSemesterClass = (semester) => ({
+                    first: 'bg-green-500/20 text-green-400',
+                    second: 'bg-orange-500/20 text-orange-400',
+                    both: 'bg-purple-500/20 text-purple-400'
+                }[semester] || 'bg-green-500/20 text-green-400');
+
+                // 课程分类显示
+                const getCategoryName = (category, cohortId) => {
+                    if (category === 'fixed') return '固定课';
+                    if (category === 'regular' && !cohortId) return '公共课';
+                    return '专业课';
+                };
+                const getCategoryClass = (category, cohortId) => {
+                    if (category === 'fixed') return 'bg-cyan-500/20 text-cyan-400';
+                    if (category === 'regular' && !cohortId) return 'bg-yellow-500/20 text-yellow-400';
+                    return 'bg-accent-500/20 text-accent-400';
+                };
+
+                const getCoursesAt = (day, period) => {
+                    // 考虑课程的持续节次，如果课程从第1节开始持续2节，则在第1节和第2节都应该显示
+                    return scheduleResults.value.filter(r => {
+                        if (r.day !== day) return false;
+                        const startPeriod = r.period;
+                        const endPeriod = startPeriod + (r.duration || 1) - 1;
+                        return period >= startPeriod && period <= endPeriod;
+                    });
+                };
+
+                // 模态框
+                const openModal = (type) => {
+                    modalType.value = type;
+                    form.value = type === 'adminClass' ? { student_count: 40 } : 
+                                 type === 'room' ? { capacity: 50 } : 
+                                 type === 'course' ? { course_type: 'theory_only', theory_hours: 0, lab_hours: 0, teaching_class_count: 1, semester: 'first', dual_teacher_enabled: false, teacher_split_week: 8 } : 
+                                 type === 'fixedCourse' ? { day: 1, period: 1, duration: 2, weeks_str: '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16' } : {};
+                    showModal.value = true;
+                };
+                const closeModal = () => { showModal.value = false; form.value = {}; };
+
+                // Toast
+                const showToast = (message, type = 'success') => {
+                    toast.value = { show: true, message, type };
+                    setTimeout(() => { toast.value.show = false; }, 3000);
+                };
+
+                // CRUD 操作
+                const saveCohort = async () => {
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/classes/cohorts/${form.value.id}` : '/classes/cohorts';
+                    await api(url, { method, body: JSON.stringify(form.value) });
+                    showToast(form.value.id ? '专业年级更新成功' : '专业年级添加成功');
+                    closeModal();
+                    loadCohorts();
+                };
+
+                const editCohort = (cohort) => {
+                    form.value = { ...cohort };
+                    modalType.value = 'cohort';
+                    showModal.value = true;
+                };
+
+                const deleteCohort = async (id) => {
+                    if (!confirm('确定删除该专业年级？')) return;
+                    await api(`/classes/cohorts/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadCohorts();
+                };
+
+                const saveAdminClass = async () => {
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/classes/admin-classes/${form.value.id}` : '/classes/admin-classes';
+                    await api(url, { method, body: JSON.stringify(form.value) });
+                    showToast(form.value.id ? '行政班更新成功' : '行政班添加成功');
+                    closeModal();
+                    loadAdminClasses();
+                };
+
+                const editAdminClass = (ac) => {
+                    form.value = { ...ac };
+                    modalType.value = 'adminClass';
+                    showModal.value = true;
+                };
+
+                const deleteAdminClass = async (id) => {
+                    if (!confirm('确定删除该行政班？')) return;
+                    await api(`/classes/admin-classes/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadAdminClasses();
+                };
+
+                const saveTeacher = async () => {
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/teachers/${form.value.id}` : '/teachers';
+                    await api(url, { method, body: JSON.stringify(form.value) });
+                    showToast(form.value.id ? '教师更新成功' : '教师添加成功');
+                    closeModal();
+                    loadTeachers();
+                };
+
+                const editTeacher = (teacher) => {
+                    form.value = { ...teacher };
+                    modalType.value = 'teacher';
+                    showModal.value = true;
+                };
+
+                const deleteTeacher = async (id) => {
+                    if (!confirm('确定删除该教师？')) return;
+                    await api(`/teachers/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadTeachers();
+                };
+
+                const saveRoom = async () => {
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/rooms/${form.value.id}` : '/rooms';
+                    await api(url, { method, body: JSON.stringify(form.value) });
+                    showToast(form.value.id ? '机房更新成功' : '机房添加成功');
+                    closeModal();
+                    loadRooms();
+                };
+
+                const editRoom = (room) => {
+                    form.value = { ...room };
+                    modalType.value = 'room';
+                    showModal.value = true;
+                };
+
+                const deleteRoom = async (id) => {
+                    if (!confirm('确定删除该机房？')) return;
+                    await api(`/rooms/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadRooms();
+                };
+
+                const saveCourse = async () => {
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/courses/${form.value.id}` : '/courses';
+                    await api(url, { method, body: JSON.stringify(form.value) });
+                    showToast(form.value.id ? '课程更新成功' : '课程添加成功');
+                    closeModal();
+                    loadCourses();
+                };
+
+                const editCourse = (course) => {
+                    form.value = { ...course };
+                    modalType.value = 'course';
+                    showModal.value = true;
+                };
+
+                const deleteCourse = async (id) => {
+                    if (!confirm('确定删除该课程？')) return;
+                    await api(`/courses/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadCourses();
+                    loadUnifiedCourses();
+                };
+
+                // 固定课 CRUD
+                const saveFixedCourse = async () => {
+                    // 解析周次字符串为数组
+                    const weeks = form.value.weeks_str.split(',').map(w => parseInt(w.trim())).filter(w => !isNaN(w));
+                    const payload = {
+                        cohort_id: form.value.cohort_id,
+                        course_name: form.value.course_name,
+                        teacher_name: form.value.teacher_name,
+                        day: form.value.day,
+                        period: form.value.period,
+                        duration: form.value.duration,
+                        weeks: weeks,
+                        group_tag: form.value.group_tag || null
+                    };
+                    const method = form.value.id ? 'PUT' : 'POST';
+                    const url = form.value.id ? `/courses/fixed/${form.value.id}` : '/courses/fixed';
+                    await api(url, { method, body: JSON.stringify(payload) });
+                    showToast(form.value.id ? '固定课更新成功' : '固定课添加成功');
+                    closeModal();
+                    loadFixedCourses();
+                    loadUnifiedCourses();
+                };
+
+                const editFixedCourse = (course) => {
+                    form.value = {
+                        id: course.id,
+                        cohort_id: course.cohort_id,
+                        course_name: course.name,
+                        teacher_name: course.teacher_name,
+                        day: course.day,
+                        period: course.period,
+                        duration: course.duration,
+                        weeks_str: course.weeks ? course.weeks.join(',') : '',
+                        group_tag: course.group_tag
+                    };
+                    modalType.value = 'fixedCourse';
+                    showModal.value = true;
+                };
+
+                const deleteFixedCourse = async (id) => {
+                    if (!confirm('确定删除该固定课？')) return;
+                    await api(`/courses/fixed/${id}`, { method: 'DELETE' });
+                    showToast('删除成功');
+                    loadFixedCourses();
+                    loadUnifiedCourses();
+                };
+
+                // 排课
+                const startScheduling = async (semester = 'first') => {
+                    scheduling.value = true;
+                    try {
+                        const result = await api('/schedule/start', { 
+                            method: 'POST', 
+                            body: JSON.stringify({ semester }) 
+                        });
+                        const semesterName = semester === 'first' ? '上册' : '下册';
+                        showToast(`排课完成（${semesterName}）！`);
+                        selectedSemester.value = semester;
+                        await loadLatestSession();
+                        await loadScheduleResults();
+                    } catch (e) {
+                        showToast('排课失败: ' + e.message, 'error');
+                        await loadLatestSession();
+                    } finally {
+                        scheduling.value = false;
+                    }
+                };
+
+                // 格式化日期
+                const formatDate = (dateStr) => {
+                    if (!dateStr) return '';
+                    const date = new Date(dateStr);
+                    return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                };
+
+                // 获取状态中文文本
+                const getStatusText = (status) => {
+                    const statusMap = {
+                        'completed': '排课完成',
+                        'running': '排课进行中',
+                        'failed': '排课失败'
+                    };
+                    return statusMap[status] || status;
+                };
+
+                const exportExcel = () => {
+                    if (!latestSession.value) return;
+                    window.open(`${API_BASE}/schedule/export/${latestSession.value.session_id}`);
+                };
+
+                // 监听
+                watch([selectedWeek, selectedCohortForSchedule, selectedAdminClass, latestSession], () => {
+                    if (latestSession.value) loadScheduleResults();
+                });
+
+                // 当学期改变时重新加载对应学期的会话
+                watch(selectedSemester, async () => {
+                    await loadLatestSession();
+                });
+
+                // 当专业年级改变时重置行政班选择
+                watch(selectedCohortForSchedule, () => {
+                    selectedAdminClass.value = null;
+                });
+
+                // 初始化
+                onMounted(refreshData);
+
+                return {
+                    currentView, loading, scheduling, showModal, modalType, classTab,
+                    searchTeacher, filterCohortId, filterSemester, filterCourseCategory, selectedCohortForSchedule, selectedAdminClass, selectedWeek, selectedSemester, sidebarExpanded,
+                    currentTheme, setTheme, customColor, customThemeStyle, onCustomColorChange,
+                    cohorts, adminClasses, teachers, rooms, courses, fixedCourses, unifiedCourses, scheduleResults, latestSession,
+                    form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle,
+                    refreshData, openModal, closeModal, showToast, formatDate, getStatusText,
+                    getCohortName, getAdminClassCount, getAdminClassName, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt,
+                    saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
+                    saveTeacher, editTeacher, deleteTeacher, saveRoom, editRoom, deleteRoom,
+                    saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
