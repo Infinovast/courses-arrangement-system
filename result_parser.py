@@ -52,8 +52,13 @@ def export_schedule_to_excel(
         group_tag = item.get('group_tag')
         if not cohort_id: continue
         all_cohort_subgroups = cohort_to_subgroups.get(cohort_id, [])
-        if group_tag:
+        
+        # 【修复】改进子组匹配逻辑，与 deap_scheduler 和 campus_pre_scheduler 保持一致
+        if group_tag and group_tag != 'default':
             relevant_subgroups = [sg for sg in all_cohort_subgroups if sg.fixed_schedule_tag == group_tag]
+            # 如果没有匹配到，回退到所有子组
+            if not relevant_subgroups:
+                relevant_subgroups = all_cohort_subgroups
         else:
             relevant_subgroups = all_cohort_subgroups
         key = (item['course_name'], item['teacher_name'], False, None)

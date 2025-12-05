@@ -71,6 +71,9 @@ app.include_router(schedule_api.router, prefix=settings.API_PREFIX)
 # 前端页面
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 
+# 挂载静态文件目录（用于 config.js 等静态资源）
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
 @app.get("/", tags=["前端"])
 def serve_frontend():
     """返回前端页面"""

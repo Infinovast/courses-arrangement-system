@@ -197,7 +197,7 @@ def evaluate_individual_standalone(individual, generation_info, max_gen, **kwarg
 class DeapScheduler:
     def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences):
         self.MAX_LABS_SIMULTANEOUSLY = 2
-        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 3000, 0.9, 0.4, 10
+        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 300, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
         self.tc_to_sg_map, self.fixed_schedule, self.teacher_preferences = tc_to_sg_map, fixed_schedule, teacher_preferences
@@ -218,22 +218,27 @@ class DeapScheduler:
             reqs = tc.course.get_schedule_requirements()
             phase_weeks = tc.get_effective_weeks() if hasattr(tc, 'get_effective_weeks') else []
 
-            for part in ['theory', 'lab']:
-                if part in reqs:
-                    req = reqs[part].copy()
-                    req['phase_weeks'] = phase_weeks
-                    # 修复：记录 (课程ID + 教学班ID) 用于分组（确保仅同一教学班的分阶段任务被分组）
-                    req['course_tc_id'] = f"{tc.course.id}_{tc.id}"
-                    self.tasks.append({'tc': tc, 'is_lab': part == 'lab', 'req': req})
+            # 遍历所有 requirement（支持毕业班课程的多个部分，如 theory_makeup_2h, theory_makeup_3h 等）
+            for part_key, req_data in reqs.items():
+                req = req_data.copy()
+                req['phase_weeks'] = phase_weeks
+                # 修复：记录 (课程ID + 教学班ID) 用于分组（确保仅同一教学班的分阶段任务被分组）
+                req['course_tc_id'] = f"{tc.course.id}_{tc.id}"
+                # 判断是否为实验课
+                is_lab = 'lab' in part_key
+                self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': req})
 
     def _prepare_jit_parameters(self):
         self.jit_params = {}
 
         self.weeks_patterns = {
             'weekly': SEMESTER_WEEKS, 'single_week': SINGLE_WEEKS, 'double_week': DOUBLE_WEEKS,
-            'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_16': WEEKS_5_TO_16, 'weeks_5_to_17': WEEKS_5_TO_17,
+            'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_15': WEEKS_5_TO_15, 'weeks_5_to_16': WEEKS_5_TO_16, 'weeks_5_to_17': WEEKS_5_TO_17,
             'weeks_6_to_17': WEEKS_6_TO_17, 'weeks_1_to_8': WEEKS_1_TO_8, 'weeks_9_to_16': WEEKS_9_TO_16,
             'weeks_16_to_17': WEEKS_16_TO_17,
+            # 毕业班特殊模式
+            'graduation_48h': WEEKS_5_TO_16,  # 48学时: 第5-16周
+            'graduation_32h_main': WEEKS_5_TO_15,  # 32学时主体: 第5-15周
         }
         self.pattern_map = {name: i for i, name in enumerate(self.weeks_patterns.keys())}
 
@@ -369,7 +374,7 @@ class DeapScheduler:
         for sg in self.subgroups:
             cohort_sgs_map[sg.cohort.id].append(sg)
 
-        # 处理固定课程（保持不变）
+        # 处理固定课程
         for item in self.fixed_schedule:
             weeks, st, dur = item['week'], item['start_time'], item['duration']
             t_idx = self.teacher_to_idx.get(item['teacher_name'])
@@ -381,16 +386,30 @@ class DeapScheduler:
             if not w_indices or not p_indices:
                 continue
 
+            # 【关键修复】先标记教师占用，确保无论 relevant_sgs 是否为空都能正确标记
+            if t_idx is not None:
+                grids['fixed_teacher_grid'][np.ix_([t_idx], w_indices, [d_idx], p_indices)] = 1
+
             sgs = cohort_sgs_map.get(item.get('cohort_id'), [])
             tag = item.get('group_tag')
-            relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag] if tag and tag != 'default' else sgs
+            
+            # 【修复】改进子组匹配逻辑：
+            # 1. 如果没有 group_tag 或 group_tag 是 'default'，标记所有子组
+            # 2. 如果有具体的 group_tag，优先匹配该 tag 的子组
+            # 3. 如果没有匹配到任何子组（tag 不存在），回退到标记所有子组（保守策略）
+            if tag and tag != 'default':
+                relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag]
+                # 如果没有匹配到，回退到所有子组（这个固定课程可能影响整个cohort）
+                if not relevant_sgs:
+                    relevant_sgs = sgs
+            else:
+                relevant_sgs = sgs
 
+            # 标记子组占用
             for sg in relevant_sgs:
                 sg_idx = self.subgroup_to_idx.get(sg.id)
                 if sg_idx is not None:
                     grids['fixed_subgroup_grid'][np.ix_([sg_idx], w_indices, [d_idx], p_indices)] = 1
-                if t_idx is not None:
-                    grids['fixed_teacher_grid'][np.ix_([t_idx], w_indices, [d_idx], p_indices)] = 1
 
             if is_lab_item:
                 grids['fixed_lab_usage_grid'][np.ix_(w_indices, [d_idx], p_indices)] += 1
@@ -442,8 +461,11 @@ class DeapScheduler:
         self.jit_params['semester_weeks_len'] = len(SEMESTER_WEEKS)
 
     def _setup_deap_toolbox(self):
-        creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
-        creator.create("Individual", list, fitness=creator.FitnessMin)
+        # 避免重复创建类导致内存泄漏
+        if not hasattr(creator, "FitnessMin"):
+            creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+        if not hasattr(creator, "Individual"):
+            creator.create("Individual", list, fitness=creator.FitnessMin)
         self.toolbox = base.Toolbox()
 
         self.toolbox.register("individual_generator", lambda: [
@@ -526,6 +548,25 @@ class DeapScheduler:
         print(f"\nGA 演化完成。最优解的最终惩罚值 (所有约束权重最大): {self.best_fitness:.2f}")
 
         return self.best_fitness < 5000
+    
+    def cleanup(self):
+        """清理资源，释放内存"""
+        # 清理大型数组
+        if hasattr(self, 'jit_params'):
+            self.jit_params.clear()
+        if hasattr(self, 'task_to_valid_slots'):
+            self.task_to_valid_slots.clear()
+        if hasattr(self, 'slot_decode_map_list'):
+            self.slot_decode_map_list.clear()
+        if hasattr(self, 'tasks'):
+            self.tasks.clear()
+        # 清理 toolbox
+        if hasattr(self, 'toolbox'):
+            self.toolbox.unregister("map")
+            del self.toolbox
+        # 强制垃圾回收
+        import gc
+        gc.collect()
 
     def get_results(self):
         if not hasattr(self, 'best_individual') or not self.best_individual:

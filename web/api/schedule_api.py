@@ -110,8 +110,22 @@ def get_schedule_results(
     """
     from ..models.db_models import AdminClass, Cohort as CohortModel
     
+    # 先查询所有结果（不按周筛选），用于聚合周次信息
+    all_results_query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
+    if cohort_id:
+        all_results_query = all_results_query.filter(ScheduleResult.cohort_id == cohort_id)
+    if admin_class_id:
+        all_results_query = all_results_query.filter(ScheduleResult.admin_class_id == admin_class_id)
+    all_results = all_results_query.all()
+    
+    # 聚合周次信息：按 (teaching_class_id, day, period, admin_class_id) 分组
+    weeks_map = defaultdict(list)
+    for r in all_results:
+        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
+        weeks_map[key].append(r.week)
+    
+    # 按周筛选结果
     query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
-
     if cohort_id:
         query = query.filter(ScheduleResult.cohort_id == cohort_id)
     if admin_class_id:
@@ -127,7 +141,7 @@ def get_schedule_results(
         ScheduleResult.period
     ).all()
 
-    # 补充行政班名称和专业年级名称
+    # 补充行政班名称、专业年级名称、周次字符串和课程类型
     response_list = []
     for r in results:
         # 获取行政班名称
@@ -145,6 +159,19 @@ def get_schedule_results(
             cohort = db.query(CohortModel).filter(CohortModel.id == r.cohort_id).first()
             if cohort:
                 cohort_name = f"{cohort.major}-{cohort.grade}"
+        
+        # 获取聚合的周次信息
+        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
+        weeks = sorted(set(weeks_map.get(key, [r.week])))
+        week_str = _format_weeks(weeks)
+        
+        # 获取课程类型
+        if r.is_fixed:
+            course_type_str = "固定课"
+        elif r.is_lab:
+            course_type_str = "实验课"
+        else:
+            course_type_str = "理论课"
         
         response_list.append(ScheduleResultResponse(
             id=r.id,
@@ -166,6 +193,8 @@ def get_schedule_results(
             admin_class_id=r.admin_class_id,
             admin_class_name=admin_class_name,
             cohort_name=cohort_name,
+            week_str=week_str,
+            course_type_str=course_type_str,
             created_at=r.created_at
         ))
 
@@ -270,13 +299,11 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         
-        # ==================== 1. 按行政班的课表 ====================
+        # ==================== 1. 按行政班的课表（网格视图） ====================
         for admin_class in admin_classes:
             cohort = cohort_map.get(admin_class.cohort_id)
             if not cohort:
                 continue
-            
-            sheet_name = f"{cohort.major}{admin_class.class_index}班"[:31]
             
             # 筛选该行政班的课程
             class_results = [r for r in results if r.admin_class_id == admin_class.id or 
@@ -285,74 +312,146 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
             if not class_results:
                 continue
             
-            # 创建课表网格 (11节课 x 5天)
-            # 先聚合数据：按(day, period)分组
-            grid_data = defaultdict(list)
+            # 聚合数据：按(day, period, course, teacher, ...)分组收集周次
+            grid_data = {}
             for r in class_results:
-                # 收集周次
                 key = (r.day, r.period, r.course_name, r.teacher_name, r.is_lab, r.is_fixed, r.room_name, r.duration)
-                if key not in [(k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]) for k in grid_data.keys()]:
-                    grid_data[key] = []
-                # 找到对应的key并添加周次
-                for k in grid_data.keys():
-                    if k == key:
-                        grid_data[k].append(r.week)
-                        break
-                else:
-                    grid_data[key].append(r.week)
+                if key not in grid_data:
+                    grid_data[key] = {'weeks': [], 'id': r.id}
+                grid_data[key]['weeks'].append(r.week)
             
-            # 构建表格：行=节次，列=星期
-            table_data = [[''] + day_names]  # 表头
-            for period in range(1, 12):
-                row = [period_names[period-1]]
-                for day in range(1, 6):
-                    cell_content = []
-                    for (d, p, course, teacher, is_lab, is_fixed, room, duration), weeks in grid_data.items():
-                        if d == day and p <= period < p + duration:
-                            weeks_sorted = sorted(set(weeks))
-                            week_str = _format_weeks(weeks_sorted)
-                            course_type = "[固定]" if is_fixed else ("[实验]" if is_lab else "")
-                            room_str = f"\n{room}" if room else ""
-                            cell_content.append(f"{course}{course_type}\n{teacher}\n{week_str}{room_str}")
-                    row.append('\n---\n'.join(cell_content) if cell_content else '')
-                table_data.append(row)
+            # 检测时间冲突：找出有冲突的课程和无冲突的课程
+            time_slot_map = defaultdict(list)  # 时间槽 -> [key列表]
+            for key, data in grid_data.items():
+                d, p, course, teacher, is_lab, is_fixed, room, duration = key
+                for period_offset in range(duration):
+                    slot = (d, p + period_offset)
+                    time_slot_map[slot].append(key)
+            
+            conflict_keys = set()  # 有冲突的key
+            for slot, keys in time_slot_map.items():
+                if len(keys) > 1:
+                    for k in keys:
+                        conflict_keys.add(k)
+            
+            non_conflict_keys = [k for k in grid_data.keys() if k not in conflict_keys]
+            conflict_key_list = [k for k in grid_data.keys() if k in conflict_keys]
+            
+            # 将有冲突的课程分组
+            schedule_groups = []
+            for key in conflict_key_list:
+                d, p, course, teacher, is_lab, is_fixed, room, duration = key
+                key_slots = set((d, p + offset) for offset in range(duration))
+                
+                placed = False
+                for group in schedule_groups:
+                    has_conflict = False
+                    for existing_key in group:
+                        ed, ep, _, _, _, _, _, edur = existing_key
+                        existing_slots = set((ed, ep + offset) for offset in range(edur))
+                        if key_slots & existing_slots:
+                            has_conflict = True
+                            break
+                    if not has_conflict:
+                        group.append(key)
+                        placed = True
+                        break
+                
+                if not placed:
+                    schedule_groups.append([key])
+            
+            # 如果没有冲突，只生成一个课表组
+            if not schedule_groups:
+                schedule_groups = [[]]
+            
+            sheet_name = f"{cohort.major}{cohort.grade}级{admin_class.class_index}班"[:31]
+            
+            # 构建所有课表组的数据
+            all_table_data = []
+            for group_idx, conflict_group in enumerate(schedule_groups):
+                # 合并无冲突课程和当前组的冲突课程
+                group_keys = non_conflict_keys + conflict_group
+                
+                # 添加分组标题（如果有多个分组）
+                if len(schedule_groups) > 1:
+                    all_table_data.append([f'课表{group_idx+1}', '', '', '', '', ''])
+                
+                # 表头
+                all_table_data.append([''] + day_names)
+                
+                # 构建表格：行=节次，列=星期
+                for period in range(1, 12):
+                    row = [period_names[period-1]]
+                    for day in range(1, 6):
+                        cell_content = []
+                        for key in group_keys:
+                            d, p, course, teacher, is_lab, is_fixed, room, duration = key
+                            if d == day and p <= period < p + duration:
+                                weeks = grid_data[key]['weeks']
+                                weeks_sorted = sorted(set(weeks))
+                                week_str = _format_weeks(weeks_sorted)
+                                course_type = "理论课" if not is_lab and not is_fixed else ("实验课" if is_lab else "固定课")
+                                room_str = f", {room}" if room else ""
+                                cell_content.append(f"{course}\n({course_type}, {week_str}, {teacher}{room_str})")
+                        row.append('\n'.join(cell_content) if cell_content else '')
+                    all_table_data.append(row)
+                
+                # 分组之间添加空行
+                if group_idx < len(schedule_groups) - 1:
+                    all_table_data.append(['', '', '', '', '', ''])
             
             # 写入Excel
-            df = pd.DataFrame(table_data[1:], columns=table_data[0])
-            df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
+            df = pd.DataFrame(all_table_data)
+            df.to_excel(writer, sheet_name=sheet_name, index=False, header=False, startrow=1)
             
             # 应用样式
             ws = writer.sheets[sheet_name]
             
             # 添加标题
             ws.merge_cells('A1:F1')
-            ws['A1'] = f"{cohort.major} {cohort.grade}年级 {admin_class.class_index}班 课程表"
+            ws['A1'] = f"{cohort.major} {cohort.grade}级 {admin_class.class_index}班 课程表"
             ws['A1'].font = Font(bold=True, size=14)
             ws['A1'].alignment = Alignment(horizontal="center", vertical="center")
             
-            # 设置列宽和行高
-            ws.column_dimensions['A'].width = 10
+            # 设置列宽
+            ws.column_dimensions['A'].width = 8
             for col in range(2, 7):
-                ws.column_dimensions[get_column_letter(col)].width = 22
-            for row in range(3, 14):
-                ws.row_dimensions[row].height = 80
+                ws.column_dimensions[get_column_letter(col)].width = 28
             
-            # 应用表头样式
-            for col in range(1, 7):
-                cell = ws.cell(row=2, column=col)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_alignment
-                cell.border = thin_border
-            
-            # 应用单元格样式
-            for row in range(3, 14):
+            # 应用样式
+            current_row = 2
+            for group_idx in range(len(schedule_groups)):
+                # 分组标题行（如果有多个分组）
+                if len(schedule_groups) > 1:
+                    ws.merge_cells(f'A{current_row}:F{current_row}')
+                    cell = ws.cell(row=current_row, column=1)
+                    cell.font = Font(bold=True, size=12)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    current_row += 1
+                
+                # 表头行
                 for col in range(1, 7):
-                    cell = ws.cell(row=row, column=col)
-                    cell.alignment = cell_alignment
+                    cell = ws.cell(row=current_row, column=col)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
                     cell.border = thin_border
+                current_row += 1
+                
+                # 数据行
+                for _ in range(11):
+                    ws.row_dimensions[current_row].height = 60
+                    for col in range(1, 7):
+                        cell = ws.cell(row=current_row, column=col)
+                        cell.alignment = cell_alignment
+                        cell.border = thin_border
+                    current_row += 1
+                
+                # 空行
+                if group_idx < len(schedule_groups) - 1:
+                    current_row += 1
         
-        # ==================== 2. 教学班总览 ====================
+        # ==================== 2. 教学班总览（列表视图） ====================
         # 按教学班ID聚合
         teaching_class_data = defaultdict(list)
         for r in results:
@@ -373,26 +472,36 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
             for (day, period, duration), weeks in time_slots.items():
                 weeks_sorted = sorted(set(weeks))
                 week_str = _format_weeks(weeks_sorted)
-                time_str_list.append(f"周{day} 第{period}-{period+duration-1}节 {week_str}")
+                time_str_list.append(f"周{day} 第{period}-{period+duration-1}节")
             
-            # 获取行政班信息
-            admin_class_name = ""
-            if first.admin_class_id:
-                ac = admin_class_map.get(first.admin_class_id)
-                if ac:
-                    cohort = cohort_map.get(ac.cohort_id)
-                    if cohort:
-                        admin_class_name = f"{cohort.major}{ac.class_index}班"
+            # 获取周次汇总
+            all_weeks = sorted(set(r.week for r in tc_results))
+            week_str = _format_weeks(all_weeks)
+            
+            # 获取包含的班级信息
+            admin_class_names = set()
+            subgroup_count = 0
+            for r in tc_results:
+                if r.admin_class_id:
+                    ac = admin_class_map.get(r.admin_class_id)
+                    if ac:
+                        cohort = cohort_map.get(ac.cohort_id)
+                        if cohort:
+                            admin_class_names.add(f"{cohort.major}{ac.class_index}班")
+                if r.subgroup_ids:
+                    subgroup_count = max(subgroup_count, len(r.subgroup_ids))
             
             overview_rows.append({
                 '教学班ID': tc_id,
                 '课程名称': first.course_name,
-                '授课教师': first.teacher_name,
-                '行政班': admin_class_name,
-                '课程类型': '固定课' if first.is_fixed else ('实验课' if first.is_lab else '理论课'),
-                '是否合班': '是' if first.is_combined else '否',
-                '教室': first.room_name or '普通教室',
-                '上课时间': '; '.join(time_str_list)
+                '教师': first.teacher_name,
+                '时间': '; '.join(time_str_list),
+                '教室': first.room_name or '',
+                '周次': week_str,
+                '类型': '固定课' if first.is_fixed else ('实验课' if first.is_lab else '理论课'),
+                '包含班级': ', '.join(sorted(admin_class_names)) if admin_class_names else '',
+                '子组数量': subgroup_count if subgroup_count > 0 else '',
+                '是否合班': '是' if first.is_combined else '否'
             })
         
         if overview_rows:
@@ -407,16 +516,18 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                 cell.fill = header_fill
                 cell.alignment = header_alignment
                 cell.border = thin_border
-            ws.column_dimensions['A'].width = 30
-            ws.column_dimensions['B'].width = 15
-            ws.column_dimensions['C'].width = 12
+            ws.column_dimensions['A'].width = 25
+            ws.column_dimensions['B'].width = 20
+            ws.column_dimensions['C'].width = 10
             ws.column_dimensions['D'].width = 18
             ws.column_dimensions['E'].width = 10
-            ws.column_dimensions['F'].width = 10
-            ws.column_dimensions['G'].width = 12
-            ws.column_dimensions['H'].width = 40
+            ws.column_dimensions['F'].width = 12
+            ws.column_dimensions['G'].width = 10
+            ws.column_dimensions['H'].width = 20
+            ws.column_dimensions['I'].width = 10
+            ws.column_dimensions['J'].width = 10
         
-        # ==================== 3. 按机房的课表 ====================
+        # ==================== 3. 机房分配表（列表视图） ====================
         # 获取所有使用的机房
         rooms_used = set(r.room_name for r in results if r.room_name and r.is_lab)
         
@@ -429,70 +540,69 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
             if not room_results:
                 continue
             
-            # 聚合数据
-            grid_data = defaultdict(list)
+            # 聚合数据：按(day, period, course, teacher, duration)分组
+            room_data = {}
             for r in room_results:
-                key = (r.day, r.period, r.course_name, r.teacher_name, r.teaching_class_id, r.duration)
-                for k in list(grid_data.keys()):
-                    if k == key:
-                        grid_data[k].append(r.week)
-                        break
-                else:
-                    grid_data[key] = [r.week]
+                key = (r.day, r.period, r.course_name, r.teacher_name, r.duration)
+                if key not in room_data:
+                    room_data[key] = []
+                room_data[key].append(r.week)
             
-            # 构建表格
-            table_data = [[''] + day_names]
-            for period in range(1, 12):
-                row = [period_names[period-1]]
-                for day in range(1, 6):
-                    cell_content = []
-                    for (d, p, course, teacher, tc_id, duration), weeks in grid_data.items():
-                        if d == day and p <= period < p + duration:
-                            weeks_sorted = sorted(set(weeks))
-                            week_str = _format_weeks(weeks_sorted)
-                            cell_content.append(f"{course}\n{teacher}\n{week_str}")
-                    row.append('\n---\n'.join(cell_content) if cell_content else '')
-                table_data.append(row)
+            # 构建列表数据
+            room_rows = []
+            for (day, period, course, teacher, duration), weeks in room_data.items():
+                weeks_sorted = sorted(set(weeks))
+                week_str = _format_weeks(weeks_sorted)
+                room_rows.append({
+                    '时间': f'周{day} 第{period}-{period+duration-1}节',
+                    '课程名称': course,
+                    '教师': teacher,
+                    '周次': week_str,
+                    '类型': '实验课'
+                })
             
-            df = pd.DataFrame(table_data[1:], columns=table_data[0])
-            df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
+            # 按时间排序
+            room_rows.sort(key=lambda x: (int(x['时间'][1]), int(x['时间'].split('第')[1].split('-')[0])))
             
-            ws = writer.sheets[sheet_name]
-            
-            # 添加标题
-            ws.merge_cells('A1:F1')
-            ws['A1'] = f"机房「{room_name}」课程安排"
-            ws['A1'].font = Font(bold=True, size=14)
-            ws['A1'].alignment = Alignment(horizontal="center", vertical="center")
-            
-            ws.column_dimensions['A'].width = 10
-            for col in range(2, 7):
-                ws.column_dimensions[get_column_letter(col)].width = 22
-            for row in range(3, 14):
-                ws.row_dimensions[row].height = 80
-            
-            for col in range(1, 7):
-                cell = ws.cell(row=2, column=col)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_alignment
-                cell.border = thin_border
-            
-            for row in range(3, 14):
-                for col in range(1, 7):
-                    cell = ws.cell(row=row, column=col)
-                    cell.alignment = cell_alignment
+            if room_rows:
+                df_room = pd.DataFrame(room_rows)
+                df_room.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+                ws = writer.sheets[sheet_name]
+                
+                # 应用表头样式
+                for col in range(1, 6):
+                    cell = ws.cell(row=1, column=col)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
                     cell.border = thin_border
+                
+                ws.column_dimensions['A'].width = 15
+                ws.column_dimensions['B'].width = 25
+                ws.column_dimensions['C'].width = 12
+                ws.column_dimensions['D'].width = 12
+                ws.column_dimensions['E'].width = 10
+                
+                # 应用数据行样式
+                for row in range(2, len(room_rows) + 2):
+                    for col in range(1, 6):
+                        cell = ws.cell(row=row, column=col)
+                        cell.alignment = cell_alignment
+                        cell.border = thin_border
 
     output.seek(0)
     
+    from urllib.parse import quote
     semester_name = "上册" if session.semester == "first" else "下册"
     filename = f"课程表_{semester_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # URL编码中文文件名
+    encoded_filename = quote(filename)
 
     return StreamingResponse(
         output,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        headers={'Content-Disposition': f'attachment; filename*=UTF-8\'\'{"{}".format(filename)}'}
+        headers={'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
 
@@ -501,14 +611,24 @@ def _format_weeks(weeks: list) -> str:
     if not weeks:
         return ""
     weeks = sorted(list(set(weeks)))
-
-    # 检查常见模式
-    if weeks == list(range(1, 17)):
-        return "第1-16周"
-    if weeks == list(range(1, 17, 2)):
-        return "单周"
-    if weeks == list(range(2, 17, 2)):
-        return "双周"
+    
+    # 检查是否为单周模式（所有周次都是奇数，且间隔为2）
+    if len(weeks) >= 4 and all(w % 2 == 1 for w in weeks):
+        # 检查是否连续的单周
+        is_consecutive_odd = all(weeks[i] == weeks[i-1] + 2 for i in range(1, len(weeks)))
+        if is_consecutive_odd:
+            return "单周"
+    
+    # 检查是否为双周模式（所有周次都是偶数，且间隔为2）
+    if len(weeks) >= 4 and all(w % 2 == 0 for w in weeks):
+        # 检查是否连续的双周
+        is_consecutive_even = all(weeks[i] == weeks[i-1] + 2 for i in range(1, len(weeks)))
+        if is_consecutive_even:
+            return "双周"
+    
+    # 检查全周模式（连续周次）
+    if len(weeks) >= 10 and weeks == list(range(weeks[0], weeks[-1] + 1)):
+        return f"第{weeks[0]}-{weeks[-1]}周"
 
     # 合并连续周次
     ranges = []

@@ -39,13 +39,34 @@ class CampusScheduler:
             cohort_id = item.get('cohort_id')
             if not cohort_id: continue
 
-            sgs = self.cohort_sgs_map.get(cohort_id, [])
-            tag = item.get('group_tag')
-            relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag] if tag and tag != 'default' else sgs
-
             teacher_idx = self.teacher_to_idx.get(item['teacher_name'])
             d_idx, p_start_idx = item['start_time'].day - 1, item['start_time'].period - 1
 
+            # 【关键修复】先标记教师占用，确保无论 relevant_sgs 是否为空都能正确标记
+            if teacher_idx is not None:
+                for w in item['week']:
+                    w_idx = w - 1
+                    if not (0 <= w_idx < len(ALL_WEEKS)): continue
+                    for p_offset in range(item['duration']):
+                        p_idx = p_start_idx + p_offset
+                        if 0 <= d_idx < len(DAYS) and 0 <= p_idx < len(PERIODS):
+                            self.teacher_grid[teacher_idx, w_idx, d_idx, p_idx] = True
+
+            sgs = self.cohort_sgs_map.get(cohort_id, [])
+            tag = item.get('group_tag')
+            
+            # 【修复】改进子组匹配逻辑：
+            # 1. 如果没有 group_tag 或 group_tag 是 'default'，标记所有子组
+            # 2. 如果有具体的 group_tag，优先匹配该 tag 的子组
+            # 3. 如果没有匹配到任何子组，回退到标记所有子组
+            if tag and tag != 'default':
+                relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag]
+                if not relevant_sgs:
+                    relevant_sgs = sgs
+            else:
+                relevant_sgs = sgs
+
+            # 标记子组占用
             for sg in relevant_sgs:
                 sg_idx = self.subgroup_to_idx.get(sg.id)
                 if sg_idx is None: continue
@@ -57,8 +78,6 @@ class CampusScheduler:
                         p_idx = p_start_idx + p_offset
                         if 0 <= d_idx < len(DAYS) and 0 <= p_idx < len(PERIODS):
                             self.subgroup_grid[sg_idx, w_idx, d_idx, p_idx] = True
-                            if teacher_idx is not None:
-                                self.teacher_grid[teacher_idx, w_idx, d_idx, p_idx] = True
 
     def schedule(self):
         self._initialize_grids_with_fixed_schedule()
@@ -81,14 +100,13 @@ class CampusScheduler:
             reqs = tc.course.get_schedule_requirements()
             phase_weeks = tc.get_effective_weeks()
 
-            if 'theory' in reqs:
-                theory_req = reqs['theory'].copy()
-                theory_req['phase_weeks'] = phase_weeks
-                all_tasks.append({'tc': tc, 'req': theory_req, 'is_lab': False, 'id': (tc.id, 'theory')})
-            if 'lab' in reqs:
-                lab_req = reqs['lab'].copy()
-                lab_req['phase_weeks'] = phase_weeks
-                all_tasks.append({'tc': tc, 'req': lab_req, 'is_lab': True, 'id': (tc.id, 'lab')})
+            # 遍历所有 requirement（支持毕业班课程的多个部分，如 theory_makeup_2h, theory_makeup_3h 等）
+            for part_key, req_data in reqs.items():
+                req = req_data.copy()
+                req['phase_weeks'] = phase_weeks
+                # 判断是否为实验课
+                is_lab = 'lab' in part_key
+                all_tasks.append({'tc': tc, 'req': req, 'is_lab': is_lab, 'id': (tc.id, part_key)})
 
         successful_placements = []
         placed_task_ids = set()
@@ -119,10 +137,13 @@ class CampusScheduler:
 
     def _schedule_preferred_pattern_tasks(self, tasks, successful_placements, placed_task_ids):
         week_pattern_map = {
-            'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_16': WEEKS_5_TO_16,
+            'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_15': WEEKS_5_TO_15, 'weeks_5_to_16': WEEKS_5_TO_16,
             'weeks_5_to_17': WEEKS_5_TO_17, 'weeks_6_to_17': WEEKS_6_TO_17,
             'weeks_1_to_8': WEEKS_1_TO_8, 'weeks_9_to_16': WEEKS_9_TO_16,
-            'weeks_16_to_17': WEEKS_16_TO_17
+            'weeks_16_to_17': WEEKS_16_TO_17,
+            # 毕业班特殊模式
+            'graduation_48h': WEEKS_5_TO_16,  # 48学时: 第5-16周
+            'graduation_32h_main': WEEKS_5_TO_15,  # 32学时主体: 第5-15周
         }
         for task in tasks:
             pattern = task['tc'].course.preferred_pattern
@@ -265,6 +286,13 @@ class CampusScheduler:
                         continue
 
     def _schedule_48h_plus_tasks(self, tasks, successful_placements, placed_task_ids):
+        # 毕业班课程周次模式映射
+        graduation_week_pattern_map = {
+            'graduation_48h': WEEKS_5_TO_16,
+            'graduation_32h_main': WEEKS_5_TO_15,
+            'weeks_16_to_17': WEEKS_16_TO_17,
+        }
+        
         tasks_to_process = list(tasks)
 
         for task in tasks_to_process:
@@ -273,7 +301,11 @@ class CampusScheduler:
 
             duration = task['req']['hours_per_block']
             phase_weeks = task['req'].get('phase_weeks', [])
-            base_weeks = SEMESTER_WEEKS
+            pattern = task['req'].get('pattern', 'weekly')
+            weekly_sessions = task['req'].get('weekly_sessions', 1)
+            
+            # 根据 pattern 选择基础周次
+            base_weeks = graduation_week_pattern_map.get(pattern, SEMESTER_WEEKS)
 
             # 关键修复：过滤48学时课程的阶段周次
             if phase_weeks:
@@ -282,7 +314,11 @@ class CampusScheduler:
             if not base_weeks:
                 continue
 
-            if self._try_place_task(task, [base_weeks], duration, successful_placements,
+            # 毕业班48学时课程: 每周2次课
+            if weekly_sessions == 2:
+                if self._try_place_task_multiple_sessions(task, base_weeks, duration, 2, successful_placements, placed_task_ids):
+                    continue
+            elif self._try_place_task(task, [base_weeks], duration, successful_placements,
                                     placed_task_ids):
                 continue
 
@@ -498,6 +534,52 @@ class CampusScheduler:
                     successful_placements.append(p)
                     placed_task_ids.add(task['id'])
                     return True
+        return False
+
+    def _try_place_task_multiple_sessions(self, task, weeks, duration, sessions_per_week, successful_placements, placed_task_ids):
+        """处理每周多次课的情况（如毕业班48学时课程，每周2次）"""
+        if task['id'] in placed_task_ids:
+            return True
+        
+        if not weeks:
+            return False
+        
+        slots = self._get_valid_slots(duration, teacher_name=task['tc'].teacher_name)
+        
+        # 尝试找到sessions_per_week个不冲突的时间槽
+        from itertools import combinations
+        for slot_combo in combinations(slots, sessions_per_week):
+            all_valid = True
+            placements_to_commit = []
+            
+            # 检查所有时间槽是否都不冲突
+            for slot in slot_combo:
+                conflicts = self._check_conflict_vectorized(task, slot, weeks)
+                if conflicts:
+                    all_valid = False
+                    break
+                
+                room_name = self._find_available_lab_room(task, slot, weeks)
+                if task['is_lab'] and room_name is None:
+                    all_valid = False
+                    break
+                
+                placements_to_commit.append({
+                    'task': task, 
+                    'slot': slot, 
+                    'weeks': weeks, 
+                    'duration': duration, 
+                    'room_name': room_name
+                })
+            
+            if all_valid and len(placements_to_commit) == sessions_per_week:
+                # 提交所有安排
+                for p in placements_to_commit:
+                    self._commit_placement(p)
+                    successful_placements.append(p)
+                placed_task_ids.add(task['id'])
+                return True
+        
         return False
 
     def _find_fit_with_makeup(self, task, duration, target_weeks, **kwargs):
@@ -748,3 +830,25 @@ class CampusScheduler:
                      "room_name": room_name if room_name != "N/A" else None, "is_lab": bool(is_lab),
                      "is_combined": bool(tc.is_combined)})
         return detailed, fixed
+    
+    def cleanup(self):
+        """清理资源，释放内存"""
+        # 清理大型 numpy 数组
+        if hasattr(self, 'teacher_grid'):
+            del self.teacher_grid
+        if hasattr(self, 'subgroup_grid'):
+            del self.subgroup_grid
+        if hasattr(self, 'lab_usage_grid'):
+            del self.lab_usage_grid
+        if hasattr(self, 'room_grid'):
+            del self.room_grid
+        # 清理其他引用
+        if hasattr(self, 'all_tcs_to_schedule'):
+            self.all_tcs_to_schedule.clear()
+        if hasattr(self, 'teacher_schedule'):
+            self.teacher_schedule.clear()
+        if hasattr(self, 'cohort_sgs_map'):
+            self.cohort_sgs_map.clear()
+        # 强制垃圾回收
+        import gc
+        gc.collect()

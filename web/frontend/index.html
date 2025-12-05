@@ -4,10 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智能排课系统</title>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="/static/config.js"></script>
+    <script src="/static/static/js/vue.global.prod.js"></script>
+    <script src="/static/static/js/tailwind.js"></script>
+    <link href="/static/static/css/inter.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/static/css/fontawesome.min.css">
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -204,9 +205,34 @@
                         <p class="text-xs text-gray-500 mt-0.5">智能排课管理系统 v1.0</p>
                     </div>
                     <div class="flex items-center space-x-4">
-                        <div v-if="latestSession" class="flex items-center space-x-2 text-sm">
-                            <span class="w-2 h-2 rounded-full pulse-dot" :class="latestSession.status === 'completed' ? 'bg-green-400' : latestSession.status === 'failed' ? 'bg-red-400' : 'bg-yellow-400'"></span>
-                            <span class="text-gray-400">{{ getStatusText(latestSession.status) }}</span>
+                        <div class="flex items-center space-x-2 text-sm">
+                            <!-- 排课进行中状态（始终显示正在排课的学期） -->
+                            <template v-if="scheduling">
+                                <span class="px-2 py-0.5 rounded text-xs" :class="schedulingSemester === 'first' ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'">
+                                    {{ schedulingSemester === 'first' ? '上册' : '下册' }}
+                                </span>
+                                <span class="w-2 h-2 rounded-full pulse-dot bg-yellow-400"></span>
+                                <span class="text-yellow-400">排课进行中...</span>
+                            </template>
+                            <!-- 非排课状态：显示当前选中学期的状态 -->
+                            <template v-else>
+                                <span class="px-2 py-0.5 rounded text-xs" :class="selectedSemester === 'first' ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'">
+                                    {{ selectedSemester === 'first' ? '上册' : '下册' }}
+                                </span>
+                                <!-- 有排课记录 -->
+                                <template v-if="latestSession">
+                                    <span class="w-2 h-2 rounded-full pulse-dot" :class="{
+                                        'bg-green-400': latestSession.status === 'completed',
+                                        'bg-yellow-400': latestSession.status === 'completed_with_warnings' || latestSession.status === 'running',
+                                        'bg-red-400': latestSession.status === 'failed'
+                                    }"></span>
+                                    <span class="text-gray-400">{{ getStatusText(latestSession.status) }}</span>
+                                </template>
+                                <!-- 无排课记录 -->
+                                <template v-else>
+                                    <span class="text-gray-500">暂无排课记录</span>
+                                </template>
+                            </template>
                         </div>
                         <!-- 主题切换 -->
                         <div class="theme-dropdown">
@@ -313,11 +339,16 @@
 
                         <!-- 专业年级列表 -->
                         <div v-if="classTab === 'cohorts'" class="grid grid-cols-3 gap-4">
-                            <div v-for="cohort in cohorts" :key="cohort.id" class="glass rounded-xl p-5 hover-lift">
+                            <div v-for="cohort in cohorts" :key="cohort.id" class="glass rounded-xl p-5 hover-lift" :class="cohort.is_graduation ? 'ring-1 ring-orange-500/50' : ''">
                                 <div class="flex justify-between items-start">
                                     <div>
-                                        <h4 class="font-medium text-lg">{{ cohort.major }}</h4>
-                                        <p class="text-sm text-gray-500">{{ cohort.grade }} 年级</p>
+                                        <div class="flex items-center space-x-2">
+                                            <h4 class="font-medium text-lg">{{ cohort.major }}</h4>
+                                            <span v-if="cohort.is_graduation" class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400">
+                                                <i class="fas fa-graduation-cap mr-1"></i>毕业
+                                            </span>
+                                        </div>
+                                        <p class="text-sm text-gray-500">{{ cohort.grade }} 级</p>
                                         <p class="text-xs text-accent-400 mt-2">{{ getAdminClassCount(cohort.id) }} 个行政班</p>
                                     </div>
                                     <div class="flex flex-col space-y-1">
@@ -340,6 +371,7 @@
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">专业年级</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">班级</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">人数</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">类型</th>
                                         <th class="px-6 py-4 text-right text-sm font-medium text-gray-400">操作</th>
                                     </tr>
                                 </thead>
@@ -348,6 +380,12 @@
                                         <td class="px-6 py-4 text-sm">{{ getCohortName(ac.cohort_id) }}</td>
                                         <td class="px-6 py-4 text-sm">{{ ac.class_index }} 班</td>
                                         <td class="px-6 py-4 text-sm text-gray-400">{{ ac.student_count }} 人</td>
+                                        <td class="px-6 py-4 text-sm">
+                                            <span v-if="ac.is_graduation_class" class="text-xs px-2 py-1 rounded-full bg-orange-500/20 text-orange-400">
+                                                <i class="fas fa-graduation-cap mr-1"></i>毕业班
+                                            </span>
+                                            <span v-else class="text-gray-500">-</span>
+                                        </td>
                                         <td class="px-6 py-4 text-right space-x-2">
                                             <button @click="editAdminClass(ac)" class="text-gray-500 hover:text-accent-400 transition-colors">
                                                 <i class="fas fa-edit"></i>
@@ -474,7 +512,7 @@
                                 </div>
                                 <select v-model="filterCohortId" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="filterCourseCategory === 'public'">
                                     <option :value="null">全部专业年级</option>
-                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                                 </select>
                             </div>
                             <div class="flex space-x-2">
@@ -497,6 +535,7 @@
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">分类</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">学期</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">专业年级</th>
+                                        <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">行政班</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">授课教师</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">类型/时间</th>
                                         <th class="px-6 py-4 text-left text-sm font-medium text-gray-400">学时/节次</th>
@@ -505,10 +544,15 @@
                                 </thead>
                                 <tbody class="divide-y divide-gray-800">
                                     <tr v-for="course in filteredUnifiedCourses" :key="course.category + '_' + course.id" class="hover:bg-white/5 transition-colors">
-                                        <td class="px-6 py-4 font-medium">{{ course.name }}</td>
+                                        <td class="px-6 py-4 font-medium">
+                                            {{ course.name }}
+                                            <span v-if="course.is_graduation_course" class="ml-2 text-xs px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400" title="毕业班课程">
+                                                <i class="fas fa-graduation-cap"></i>
+                                            </span>
+                                        </td>
                                         <td class="px-6 py-4">
-                                            <span :class="['text-xs px-2 py-1 rounded-full', getCategoryClass(course.category, course.cohort_id)]">
-                                                {{ getCategoryName(course.category, course.cohort_id) }}
+                                            <span :class="['text-xs px-2 py-1 rounded-full', getCategoryClass(course.category, course.cohort_id, course.cohort_ids)]">
+                                                {{ getCategoryName(course.category, course.cohort_id, course.cohort_ids) }}
                                             </span>
                                         </td>
                                         <td class="px-6 py-4">
@@ -517,6 +561,10 @@
                                             </span>
                                         </td>
                                         <td class="px-6 py-4 text-sm text-gray-400">{{ course.cohort_name || '-' }}</td>
+                                        <td class="px-6 py-4 text-sm text-gray-400">
+                                            <span v-if="course.category === 'fixed'">{{ getAdminClassNames(course.admin_class_ids) }}</span>
+                                            <span v-else>-</span>
+                                        </td>
                                         <td class="px-6 py-4 text-sm">{{ course.teacher_name || '-' }}</td>
                                         <td class="px-6 py-4">
                                             <span v-if="course.category === 'fixed'" class="text-xs text-gray-400">
@@ -560,8 +608,8 @@
                                     </button>
                                 </div>
                                 <select v-model="selectedCohortForSchedule" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
-                                    <option :value="null">选择专业年级</option>
-                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                    <option :value="null">全部专业年级</option>
+                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                                 </select>
                                 <select v-model="selectedAdminClass" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="!selectedCohortForSchedule">
                                     <option :value="null">全部行政班</option>
@@ -590,35 +638,81 @@
                         </div>
                         
                         <!-- 当前会话信息 -->
-                        <div v-if="latestSession" class="glass rounded-xl p-4 flex items-center justify-between">
+                        <div class="glass rounded-xl p-4 flex items-center justify-between">
                             <div class="flex items-center space-x-4">
-                                <span class="w-2 h-2 rounded-full" :class="latestSession.status === 'completed' ? 'bg-green-400' : latestSession.status === 'failed' ? 'bg-red-400' : 'bg-yellow-400'"></span>
-                                <span class="text-sm text-gray-400">当前课表: {{ latestSession.semester === 'first' ? '上册' : '下册' }}</span>
-                                <span class="text-xs text-gray-500">{{ latestSession.message }}</span>
+                                <!-- 排课进行中状态（只在当前学期显示） -->
+                                <template v-if="scheduling && schedulingSemester === selectedSemester">
+                                    <span class="w-2 h-2 rounded-full pulse-dot bg-yellow-400"></span>
+                                    <span class="text-sm text-gray-400">当前课表: {{ selectedSemester === 'first' ? '上册' : '下册' }}</span>
+                                    <span class="text-xs text-yellow-400">排课进行中...</span>
+                                </template>
+                                <!-- 有排课记录 -->
+                                <template v-else-if="latestSession">
+                                    <span class="w-2 h-2 rounded-full" :class="{
+                                        'bg-green-400': latestSession.status === 'completed',
+                                        'bg-yellow-400': latestSession.status === 'completed_with_warnings' || latestSession.status === 'running',
+                                        'bg-red-400': latestSession.status === 'failed'
+                                    }"></span>
+                                    <span class="text-sm text-gray-400">当前课表: {{ selectedSemester === 'first' ? '上册' : '下册' }}</span>
+                                    <span class="text-xs" :class="latestSession.status === 'failed' ? 'text-red-400' : 'text-gray-500'">{{ latestSession.message }}</span>
+                                </template>
+                                <!-- 无排课记录 -->
+                                <template v-else>
+                                    <span class="w-2 h-2 rounded-full bg-gray-500"></span>
+                                    <span class="text-sm text-gray-400">当前课表: {{ selectedSemester === 'first' ? '上册' : '下册' }}</span>
+                                    <span class="text-xs text-gray-500">暂无排课记录</span>
+                                </template>
                             </div>
-                            <span class="text-xs text-gray-500">{{ formatDate(latestSession.created_at) }}</span>
+                            <span v-if="latestSession && !scheduling" class="text-xs text-gray-500">{{ formatDate(latestSession.created_at) }}</span>
                         </div>
 
                         <!-- 课表网格 -->
-                        <div v-if="latestSession" class="glass rounded-2xl p-6 overflow-auto">
-                            <div class="schedule-grid min-w-[900px]">
-                                <!-- 表头 -->
-                                <div class="bg-dark-700 rounded-tl-lg p-3 text-center text-sm font-medium text-gray-400">节次</div>
-                                <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
-                                
-                                <!-- 时间槽 -->
-                                <template v-for="period in 11" :key="period">
-                                    <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
-                                    <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative" @click="openSlotDetail(day, period)">
-                                        <div v-for="course in getCoursesAt(day, period)" :key="course.id"
-                                            class="course-block rounded-lg p-2 text-xs mb-1"
-                                            :class="course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30'">
-                                            <p class="font-medium truncate">{{ course.course_name }}</p>
-                                            <p class="text-gray-400 truncate">{{ course.teacher_name }}</p>
-                                            <p v-if="course.admin_class_id" class="text-gray-500 truncate text-[10px]">{{ getAdminClassName(course.admin_class_id) }}</p>
-                                        </div>
+                        <div v-if="latestSession">
+                            <!-- 选择具体行政班时，按子组分组显示多张课表 -->
+                            <template v-if="selectedAdminClass && groupedSchedules.length > 1">
+                                <div v-for="(group, gIndex) in groupedSchedules" :key="gIndex" class="glass rounded-2xl p-6 overflow-auto mb-4">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h4 class="text-sm font-medium text-gray-300">
+                                            <i class="fas fa-users mr-2 text-accent-400"></i>
+                                            课表 {{ gIndex + 1 }} <span class="text-gray-500 text-xs ml-2">(部分学生)</span>
+                                        </h4>
                                     </div>
-                                </template>
+                                    <div class="schedule-grid min-w-[900px]">
+                                        <div class="bg-dark-700 rounded-tl-lg p-3 text-center text-sm font-medium text-gray-400">节次</div>
+                                        <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
+                                        <template v-for="period in 11" :key="period">
+                                            <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
+                                            <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative">
+                                                <div v-for="course in getCoursesAtForGroup(day, period, group)" :key="course.id"
+                                                    class="course-block rounded-lg p-2 text-xs mb-1"
+                                                    :class="course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30')">
+                                                    <p class="font-medium truncate">{{ course.course_name }}</p>
+                                                    <p class="text-gray-400 truncate text-[10px]">({{ course.course_type_str || '课程' }}, {{ course.week_str || '第'+course.week+'周' }}, {{ course.teacher_name }}{{ course.room_name ? ', '+course.room_name : '' }})</p>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                            
+                            <!-- 默认单张课表 -->
+                            <div v-else class="glass rounded-2xl p-6 overflow-auto">
+                                <div class="schedule-grid min-w-[900px]">
+                                    <div class="bg-dark-700 rounded-tl-lg p-3 text-center text-sm font-medium text-gray-400">节次</div>
+                                    <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
+                                    <template v-for="period in 11" :key="period">
+                                        <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
+                                        <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative">
+                                            <div v-for="course in getCoursesAt(day, period)" :key="course.id"
+                                                class="course-block rounded-lg p-2 text-xs mb-1"
+                                                :class="course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30')">
+                                                <p class="font-medium truncate">{{ course.course_name }}</p>
+                                                <p class="text-gray-400 truncate text-[10px]">({{ course.course_type_str || '课程' }}, {{ course.week_str || '第'+course.week+'周' }}, {{ course.teacher_name }}{{ course.room_name ? ', '+course.room_name : '' }})</p>
+                                                <p v-if="course.admin_class_id && !selectedAdminClass" class="text-gray-500 truncate text-[10px]">{{ getAdminClassName(course.admin_class_id) }}</p>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
                         </div>
                         
@@ -650,8 +744,15 @@
                         <input v-model="form.major" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-2">年级</label>
-                        <input v-model.number="form.grade" type="number" min="1" max="6" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        <label class="block text-sm text-gray-400 mb-2">入学年份</label>
+                        <select v-model.number="form.grade" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                            <option v-for="year in gradeYears" :key="year" :value="year">{{ year }} 级</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center space-x-3 pt-2">
+                        <input v-model="form.is_graduation" type="checkbox" id="isGraduationCohort" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-orange-500 focus:ring-orange-500">
+                        <label for="isGraduationCohort" class="text-sm">毕业年级</label>
+                        <span class="text-xs text-gray-500">(该年级所有班级自动设为毕业班)</span>
                     </div>
                     <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
                 </form>
@@ -661,7 +762,7 @@
                     <div>
                         <label class="block text-sm text-gray-400 mb-2">专业年级</label>
                         <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
-                            <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                            <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                         </select>
                     </div>
                     <div>
@@ -671,6 +772,11 @@
                     <div>
                         <label class="block text-sm text-gray-400 mb-2">学生人数</label>
                         <input v-model.number="form.student_count" type="number" min="1" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div class="flex items-center space-x-3 pt-2">
+                        <input v-model="form.is_graduation_class" type="checkbox" id="isGraduationClass" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-orange-500 focus:ring-orange-500">
+                        <label for="isGraduationClass" class="text-sm">毕业班</label>
+                        <span class="text-xs text-gray-500">(该班级课程按第5-17周排课)</span>
                     </div>
                     <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
                 </form>
@@ -712,7 +818,7 @@
                                         <div>
                                             <label class="block text-sm text-gray-400 mb-2">专业年级</label>
                                             <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
-                                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
+                                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                                             </select>
                                         </div>
                                         <div>
@@ -752,8 +858,21 @@
                                         <input v-model="form.weeks_str" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16">
                                     </div>
                                     <div>
-                                        <label class="block text-sm text-gray-400 mb-2">子组标签（可选，用于区分不同时间上课的同一课程）</label>
-                                        <input v-model="form.group_tag" type="text" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：A, B">
+                                        <label class="block text-sm text-gray-400 mb-2">行政班（可选，不选则为该专业年级全部行政班）</label>
+                                        <div class="flex flex-wrap gap-2 p-3 rounded-lg border min-h-[48px]" style="background: var(--bg-tertiary); border-color: var(--border-color);">
+                                            <template v-for="ac in adminClasses.filter(a => a.cohort_id === form.cohort_id)" :key="ac.id">
+                                                <label class="inline-flex items-center space-x-2 px-3 py-1.5 rounded cursor-pointer transition-all border"
+                                                    :class="form.admin_class_ids?.includes(ac.id) 
+                                                        ? 'bg-accent-500/20 border-accent-500/50 text-accent-400' 
+                                                        : 'border-transparent hover:border-gray-600'"
+                                                    :style="!form.admin_class_ids?.includes(ac.id) ? 'background: var(--bg-card); color: var(--text-secondary);' : ''">
+                                                    <input type="checkbox" :value="ac.id" v-model="form.admin_class_ids" class="w-4 h-4 rounded border-gray-500 text-accent-500 focus:ring-accent-500 focus:ring-offset-0">
+                                                    <span class="text-sm">{{ ac.class_index }}班</span>
+                                                </label>
+                                            </template>
+                                            <span v-if="!adminClasses.filter(a => a.cohort_id === form.cohort_id).length" class="text-sm" style="color: var(--text-muted);">请先选择专业年级</span>
+                                        </div>
+                                        <p class="text-xs mt-1" style="color: var(--text-muted);">不选择任何班级 = 全部行政班都上这门课</p>
                                     </div>
                                     <button type="submit" class="w-full py-3 bg-cyan-600 hover:bg-cyan-700 rounded-lg transition-colors font-medium">保存固定课</button>
                                 </form>
@@ -774,20 +893,33 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-2">专业年级</label>
-                            <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
-                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}年级</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
                             <label class="block text-sm text-gray-400 mb-2">授课教师</label>
                             <select v-model.number="form.teacher_id" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
                                 <option :value="null">未指定</option>
                                 <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
                             </select>
                         </div>
+                    </div>
+                    
+                    <!-- 专业年级多选 -->
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">专业年级 <span class="text-xs text-gray-500">(不选或多选为公共课)</span></label>
+                        <div class="flex flex-wrap gap-2 p-3 rounded-lg border min-h-[48px]" style="background: var(--bg-tertiary); border-color: var(--border-color);">
+                            <template v-for="c in cohorts" :key="c.id">
+                                <label class="inline-flex items-center space-x-2 px-3 py-1.5 rounded cursor-pointer transition-all border"
+                                    :class="form.cohort_ids?.includes(c.id) 
+                                        ? 'bg-accent-500/20 border-accent-500/50 text-accent-400' 
+                                        : 'border-transparent hover:border-gray-600'"
+                                    :style="!form.cohort_ids?.includes(c.id) ? 'background: var(--bg-card); color: var(--text-secondary);' : ''">
+                                    <input type="checkbox" :value="c.id" v-model="form.cohort_ids" class="w-4 h-4 rounded border-gray-500 text-accent-500 focus:ring-accent-500 focus:ring-offset-0">
+                                    <span class="text-sm">{{ c.major }} {{ c.grade }}级</span>
+                                </label>
+                            </template>
+                        </div>
+                        <p class="text-xs mt-1" style="color: var(--text-muted);">不选择任何专业 = 公共课；选择一个 = 专业课；选择多个 = 多专业公共课</p>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm text-gray-400 mb-2">课程类型</label>
                             <select v-model="form.course_type" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
@@ -796,19 +928,44 @@
                                 <option value="mixed">理论+实验</option>
                             </select>
                         </div>
-                    </div>
-                    <div class="grid grid-cols-3 gap-4">
                         <div>
                             <label class="block text-sm text-gray-400 mb-2">理论学时</label>
                             <input v-model.number="form.theory_hours" type="number" min="0" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
                         </div>
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-2">实验学时</label>
-                            <input v-model.number="form.lab_hours" type="number" min="0" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-2">实验学时</label>
+                        <input v-model.number="form.lab_hours" type="number" min="0" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    
+                    <!-- 单专业教学班数 -->
+                    <div v-if="!form.cohort_ids || form.cohort_ids.length <= 1">
+                        <label class="block text-sm text-gray-400 mb-2">教学班数</label>
+                        <input v-model.number="form.teaching_class_count" type="number" min="0.5" step="0.5" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                    </div>
+                    
+                    <!-- 多专业教学班配置 -->
+                    <div v-if="form.cohort_ids && form.cohort_ids.length > 1" class="border border-yellow-500/30 rounded-lg p-4 bg-yellow-500/5">
+                        <label class="block text-sm text-yellow-400 mb-3">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>
+                            各专业教学班数量配置 <span class="text-xs text-yellow-500">(总和必须为整数)</span>
+                        </label>
+                        <div class="space-y-2">
+                            <div v-for="cid in form.cohort_ids" :key="cid" class="flex items-center space-x-3">
+                                <span class="text-sm text-gray-300 w-32">{{ getCohortName(cid) }}</span>
+                                <input type="number" min="0" step="0.5" 
+                                    :value="form.cohort_teaching_class_counts?.[cid] || 1"
+                                    @input="updateCohortTeachingClassCount(cid, $event.target.value)"
+                                    class="flex-1 px-3 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500 text-sm">
+                                <span class="text-xs text-gray-500">个教学班</span>
+                            </div>
                         </div>
-                        <div>
-                            <label class="block text-sm text-gray-400 mb-2">教学班数</label>
-                            <input v-model.number="form.teaching_class_count" type="number" min="0.5" step="0.5" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                        <div class="mt-3 flex justify-between items-center text-sm">
+                            <span class="text-gray-400">总计:</span>
+                            <span :class="cohortTeachingClassTotal % 1 === 0 ? 'text-green-400' : 'text-red-400'">
+                                {{ cohortTeachingClassTotal }} 个教学班
+                                <span v-if="cohortTeachingClassTotal % 1 !== 0" class="text-xs">(需为整数)</span>
+                            </span>
                         </div>
                     </div>
                     
@@ -833,6 +990,18 @@
                         </div>
                     </div>
                     
+                    <!-- 毕业班课程配置 -->
+                    <div class="border-t border-gray-700 pt-4">
+                        <div class="flex items-center space-x-3">
+                            <input v-model="form.is_graduation_course" type="checkbox" id="isGraduation" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-orange-500 focus:ring-orange-500">
+                            <label for="isGraduation" class="text-sm">毕业班课程</label>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2 ml-8">
+                            48学时: 第5-16周每周上2次课，每次连上2节<br>
+                            32学时: 第5-15周每周上1次课，每次连上2节；第16-17周每周上2次，一次连上2节，另一次连上3节
+                        </p>
+                    </div>
+                    
                     <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
                 </form>
             </div>
@@ -848,7 +1017,8 @@
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:8000/api/v1';
+        // 从配置文件读取 API 地址，支持可配置部署
+        const API_BASE = window.APP_CONFIG?.API_BASE || 'http://localhost:8000/api/v1';
 
         const { createApp, ref, computed, onMounted, watch } = Vue;
 
@@ -858,6 +1028,7 @@
                 const currentView = ref('dashboard');
                 const loading = ref(false);
                 const scheduling = ref(false);
+                const schedulingSemester = ref(null);  // 记录正在排课的学期
                 const showModal = ref(false);
                 const modalType = ref('');
                 const classTab = ref('cohorts');
@@ -991,11 +1162,11 @@
                     let result = unifiedCourses.value;
                     // 按分类筛选
                     if (filterCourseCategory.value === 'specialized') {
-                        // 专业课: 有cohort_id的普通课
-                        result = result.filter(c => c.category === 'regular' && c.cohort_id);
+                        // 专业课: 有cohort_id且cohort_ids为空或只有一个的普通课
+                        result = result.filter(c => c.category === 'regular' && c.cohort_id && (!c.cohort_ids || c.cohort_ids.length <= 1));
                     } else if (filterCourseCategory.value === 'public') {
-                        // 公共课: 没有cohort_id的普通课
-                        result = result.filter(c => c.category === 'regular' && !c.cohort_id);
+                        // 公共课: 没有cohort_id的普通课 或 有多个cohort_ids的普通课
+                        result = result.filter(c => c.category === 'regular' && (!c.cohort_id || (c.cohort_ids && c.cohort_ids.length > 1)));
                     } else if (filterCourseCategory.value === 'fixed') {
                         result = result.filter(c => c.category === 'fixed');
                     }
@@ -1005,8 +1176,29 @@
                     }
                     // 按专业年级筛选
                     if (filterCohortId.value) {
-                        result = result.filter(c => c.cohort_id === filterCohortId.value);
+                        result = result.filter(c => {
+                            // 单专业课匹配cohort_id
+                            if (c.cohort_id === filterCohortId.value) return true;
+                            // 多专业课匹配cohort_ids中包含
+                            if (c.cohort_ids && c.cohort_ids.includes(filterCohortId.value)) return true;
+                            return false;
+                        });
                     }
+                    // 排序: 先按分类(fixed在前)，再按专业年级ID，然后按名称，最后按ID
+                    result = [...result].sort((a, b) => {
+                        // 固定课排在前面
+                        if (a.category === 'fixed' && b.category !== 'fixed') return -1;
+                        if (a.category !== 'fixed' && b.category === 'fixed') return 1;
+                        // 同分类内按专业年级ID排序
+                        if ((a.cohort_id || 0) !== (b.cohort_id || 0)) {
+                            return (a.cohort_id || 0) - (b.cohort_id || 0);
+                        }
+                        // 同专业年级内按名称排序
+                        const nameCompare = (a.name || '').localeCompare(b.name || '', 'zh-CN');
+                        if (nameCompare !== 0) return nameCompare;
+                        // 同名称按ID排序
+                        return (a.id || 0) - (b.id || 0);
+                    });
                     return result;
                 });
 
@@ -1025,6 +1217,16 @@
                         fixedCourse: form.value.id ? '编辑固定课' : '添加固定课'
                     };
                     return titles[modalType.value] || '';
+                });
+
+                // 生成年级选择的年份列表（当前年份往前推8年）
+                const gradeYears = computed(() => {
+                    const currentYear = new Date().getFullYear();
+                    const years = [];
+                    for (let i = 0; i < 8; i++) {
+                        years.push(currentYear - i);
+                    }
+                    return years;
                 });
 
                 // API 请求
@@ -1082,7 +1284,7 @@
                 // 辅助函数
                 const getCohortName = (id) => {
                     const c = cohorts.value.find(x => x.id === id);
-                    return c ? `${c.major} ${c.grade}年级` : '-';
+                    return c ? `${c.major} ${c.grade}级` : '-';
                 };
 
                 const getAdminClassCount = (cohortId) => adminClasses.value.filter(a => a.cohort_id === cohortId).length;
@@ -1108,16 +1310,27 @@
                     both: 'bg-purple-500/20 text-purple-400'
                 }[semester] || 'bg-green-500/20 text-green-400');
 
-                // 课程分类显示
-                const getCategoryName = (category, cohortId) => {
+                // 课程分类显示 - 支持多专业公共课
+                const getCategoryName = (category, cohortId, cohortIds) => {
                     if (category === 'fixed') return '固定课';
-                    if (category === 'regular' && !cohortId) return '公共课';
+                    // 无cohort_id或有多个cohort_ids的都是公共课
+                    if (category === 'regular' && (!cohortId || (cohortIds && cohortIds.length > 1))) return '公共课';
                     return '专业课';
                 };
-                const getCategoryClass = (category, cohortId) => {
+                const getCategoryClass = (category, cohortId, cohortIds) => {
                     if (category === 'fixed') return 'bg-cyan-500/20 text-cyan-400';
-                    if (category === 'regular' && !cohortId) return 'bg-yellow-500/20 text-yellow-400';
+                    if (category === 'regular' && (!cohortId || (cohortIds && cohortIds.length > 1))) return 'bg-yellow-500/20 text-yellow-400';
                     return 'bg-accent-500/20 text-accent-400';
+                };
+                
+                // 获取固定课的行政班显示文本
+                const getAdminClassNames = (adminClassIds) => {
+                    if (!adminClassIds || adminClassIds.length === 0) return '全部';
+                    const names = adminClassIds.map(id => {
+                        const ac = adminClasses.value.find(x => x.id === id);
+                        return ac ? `${ac.class_index}班` : '';
+                    }).filter(Boolean);
+                    return names.length > 0 ? names.join(', ') : '全部';
                 };
 
                 const getCoursesAt = (day, period) => {
@@ -1129,14 +1342,140 @@
                         return period >= startPeriod && period <= endPeriod;
                     });
                 };
+                
+                // 获取特定子组的课程
+                const getCoursesAtForGroup = (day, period, groupCourses) => {
+                    return groupCourses.filter(r => {
+                        if (r.day !== day) return false;
+                        const startPeriod = r.period;
+                        const endPeriod = startPeriod + (r.duration || 1) - 1;
+                        return period >= startPeriod && period <= endPeriod;
+                    });
+                };
+                
+                // 按时间冲突分组课表：同一时间段的冲突课程分到不同课表，没冲突的课程填充到所有课表
+                const groupedSchedules = computed(() => {
+                    if (!selectedAdminClass.value || scheduleResults.value.length === 0) {
+                        return [];
+                    }
+                    
+                    // 第一步：找出所有冲突组
+                    // timeSlotMap: 时间槽 -> [课程列表]
+                    const timeSlotMap = new Map();
+                    for (const course of scheduleResults.value) {
+                        const duration = course.duration || 1;
+                        for (let p = course.period; p < course.period + duration; p++) {
+                            const slot = `${course.day}-${p}`;
+                            if (!timeSlotMap.has(slot)) {
+                                timeSlotMap.set(slot, []);
+                            }
+                            timeSlotMap.get(slot).push(course);
+                        }
+                    }
+                    
+                    // 第二步：找出有冲突的课程和无冲突的课程
+                    const conflictCourses = new Set(); // 有冲突的课程ID
+                    for (const [slot, courses] of timeSlotMap.entries()) {
+                        // 去重（同一课程可能占用多个时间槽）
+                        const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
+                        if (uniqueCourses.length > 1) {
+                            uniqueCourses.forEach(c => conflictCourses.add(c.id));
+                        }
+                    }
+                    
+                    // 无冲突的课程
+                    const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourses.has(c.id));
+                    // 有冲突的课程
+                    const conflictCourseList = scheduleResults.value.filter(c => conflictCourses.has(c.id));
+                    
+                    // 如果没有冲突，直接返回一张课表
+                    if (conflictCourseList.length === 0) {
+                        return [scheduleResults.value];
+                    }
+                    
+                    // 第三步：将有冲突的课程分组
+                    const scheduleGroups = [];
+                    for (const course of conflictCourseList) {
+                        const courseSlots = new Set();
+                        const duration = course.duration || 1;
+                        for (let p = course.period; p < course.period + duration; p++) {
+                            courseSlots.add(`${course.day}-${p}`);
+                        }
+                        
+                        let placed = false;
+                        for (const group of scheduleGroups) {
+                            let hasConflict = false;
+                            for (const existingCourse of group.conflictCourses) {
+                                const existingDuration = existingCourse.duration || 1;
+                                for (let p = existingCourse.period; p < existingCourse.period + existingDuration; p++) {
+                                    if (courseSlots.has(`${existingCourse.day}-${p}`)) {
+                                        hasConflict = true;
+                                        break;
+                                    }
+                                }
+                                if (hasConflict) break;
+                            }
+                            
+                            if (!hasConflict) {
+                                group.conflictCourses.push(course);
+                                placed = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!placed) {
+                            scheduleGroups.push({ conflictCourses: [course] });
+                        }
+                    }
+                    
+                    // 第四步：为每个课表组添加无冲突的课程，形成完整课表
+                    return scheduleGroups.map(group => {
+                        return [...nonConflictCourses, ...group.conflictCourses];
+                    });
+                });
+
+                // 计算属性: 多专业教学班总数
+                const cohortTeachingClassTotal = computed(() => {
+                    if (!form.value.cohort_teaching_class_counts) return 0;
+                    return Object.values(form.value.cohort_teaching_class_counts).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
+                });
+                
+                // 更新某个专业的教学班数量
+                const updateCohortTeachingClassCount = (cohortId, value) => {
+                    if (!form.value.cohort_teaching_class_counts) {
+                        form.value.cohort_teaching_class_counts = {};
+                    }
+                    form.value.cohort_teaching_class_counts[cohortId] = parseFloat(value) || 0;
+                };
+                
+                // 监听 cohort_ids 变化，自动初始化教学班数量默认值
+                watch(() => form.value.cohort_ids, (newIds) => {
+                    if (!newIds || newIds.length <= 1) return;
+                    if (!form.value.cohort_teaching_class_counts) {
+                        form.value.cohort_teaching_class_counts = {};
+                    }
+                    // 为新增的专业设置默认值1
+                    for (const cid of newIds) {
+                        if (form.value.cohort_teaching_class_counts[cid] === undefined) {
+                            form.value.cohort_teaching_class_counts[cid] = 1;
+                        }
+                    }
+                    // 移除不在列表中的专业
+                    for (const cid of Object.keys(form.value.cohort_teaching_class_counts)) {
+                        if (!newIds.includes(parseInt(cid))) {
+                            delete form.value.cohort_teaching_class_counts[cid];
+                        }
+                    }
+                }, { deep: true });
 
                 // 模态框
                 const openModal = (type) => {
                     modalType.value = type;
-                    form.value = type === 'adminClass' ? { student_count: 40 } : 
+                    form.value = type === 'adminClass' ? { student_count: 40, is_graduation_class: false } : 
                                  type === 'room' ? { capacity: 50 } : 
-                                 type === 'course' ? { course_type: 'theory_only', theory_hours: 0, lab_hours: 0, teaching_class_count: 1, semester: 'first', dual_teacher_enabled: false, teacher_split_week: 8 } : 
-                                 type === 'fixedCourse' ? { day: 1, period: 1, duration: 2, weeks_str: '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16' } : {};
+                                 type === 'course' ? { course_type: 'theory_only', theory_hours: 0, lab_hours: 0, teaching_class_count: 1, semester: 'first', dual_teacher_enabled: false, teacher_split_week: 8, is_graduation_course: false, cohort_ids: [], cohort_teaching_class_counts: {} } : 
+                                 type === 'fixedCourse' ? { day: 1, period: 1, duration: 2, weeks_str: '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16', admin_class_ids: [] } :
+                                 type === 'cohort' ? { is_graduation: false } : {};
                     showModal.value = true;
                 };
                 const closeModal = () => { showModal.value = false; form.value = {}; };
@@ -1237,16 +1576,41 @@
                 };
 
                 const saveCourse = async () => {
-                    const method = form.value.id ? 'PUT' : 'POST';
-                    const url = form.value.id ? `/courses/${form.value.id}` : '/courses';
-                    await api(url, { method, body: JSON.stringify(form.value) });
-                    showToast(form.value.id ? '课程更新成功' : '课程添加成功');
+                    // 多专业时校验教学班总数
+                    if (form.value.cohort_ids && form.value.cohort_ids.length > 1) {
+                        const total = cohortTeachingClassTotal.value;
+                        if (total % 1 !== 0) {
+                            showToast(`各专业教学班数量总和必须为整数，当前为 ${total}`, 'error');
+                            return;
+                        }
+                    }
+                    
+                    // 单专业时，从 cohort_ids 设置 cohort_id
+                    const payload = { ...form.value };
+                    if (payload.cohort_ids && payload.cohort_ids.length === 1) {
+                        payload.cohort_id = payload.cohort_ids[0];
+                    } else if (payload.cohort_ids && payload.cohort_ids.length > 1) {
+                        payload.cohort_id = null;
+                    }
+                    
+                    const method = payload.id ? 'PUT' : 'POST';
+                    const url = payload.id ? `/courses/${payload.id}` : '/courses';
+                    await api(url, { method, body: JSON.stringify(payload) });
+                    showToast(payload.id ? '课程更新成功' : '课程添加成功');
                     closeModal();
                     loadCourses();
+                    loadUnifiedCourses();
                 };
 
                 const editCourse = (course) => {
                     form.value = { ...course };
+                    // 确保 cohort_ids 存在
+                    if (!form.value.cohort_ids) {
+                        form.value.cohort_ids = form.value.cohort_id ? [form.value.cohort_id] : [];
+                    }
+                    if (!form.value.cohort_teaching_class_counts) {
+                        form.value.cohort_teaching_class_counts = {};
+                    }
                     modalType.value = 'course';
                     showModal.value = true;
                 };
@@ -1271,7 +1635,7 @@
                         period: form.value.period,
                         duration: form.value.duration,
                         weeks: weeks,
-                        group_tag: form.value.group_tag || null
+                        admin_class_ids: form.value.admin_class_ids || []
                     };
                     const method = form.value.id ? 'PUT' : 'POST';
                     const url = form.value.id ? `/courses/fixed/${form.value.id}` : '/courses/fixed';
@@ -1292,7 +1656,7 @@
                         period: course.period,
                         duration: course.duration,
                         weeks_str: course.weeks ? course.weeks.join(',') : '',
-                        group_tag: course.group_tag
+                        admin_class_ids: course.admin_class_ids || []
                     };
                     modalType.value = 'fixedCourse';
                     showModal.value = true;
@@ -1309,6 +1673,8 @@
                 // 排课
                 const startScheduling = async (semester = 'first') => {
                     scheduling.value = true;
+                    schedulingSemester.value = semester;  // 记录正在排课的学期
+                    selectedSemester.value = semester;    // 切换到该学期的视图
                     try {
                         const result = await api('/schedule/start', { 
                             method: 'POST', 
@@ -1316,7 +1682,10 @@
                         });
                         const semesterName = semester === 'first' ? '上册' : '下册';
                         showToast(`排课完成（${semesterName}）！`);
-                        selectedSemester.value = semester;
+                        // 排课完成后重置筛选条件，确保看到完整课表
+                        selectedWeek.value = 1;
+                        selectedCohortForSchedule.value = null;
+                        selectedAdminClass.value = null;
                         await loadLatestSession();
                         await loadScheduleResults();
                     } catch (e) {
@@ -1324,6 +1693,7 @@
                         await loadLatestSession();
                     } finally {
                         scheduling.value = false;
+                        schedulingSemester.value = null;
                     }
                 };
 
@@ -1338,6 +1708,7 @@
                 const getStatusText = (status) => {
                     const statusMap = {
                         'completed': '排课完成',
+                        'completed_with_warnings': '排课完成(有警告)',
                         'running': '排课进行中',
                         'failed': '排课失败'
                     };
@@ -1368,13 +1739,14 @@
                 onMounted(refreshData);
 
                 return {
-                    currentView, loading, scheduling, showModal, modalType, classTab,
+                    currentView, loading, scheduling, schedulingSemester, showModal, modalType, classTab,
                     searchTeacher, filterCohortId, filterSemester, filterCourseCategory, selectedCohortForSchedule, selectedAdminClass, selectedWeek, selectedSemester, sidebarExpanded,
                     currentTheme, setTheme, customColor, customThemeStyle, onCustomColorChange,
                     cohorts, adminClasses, teachers, rooms, courses, fixedCourses, unifiedCourses, scheduleResults, latestSession,
-                    form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle,
+                    form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle, gradeYears, groupedSchedules,
+                    cohortTeachingClassTotal, updateCohortTeachingClassCount,
                     refreshData, openModal, closeModal, showToast, formatDate, getStatusText,
-                    getCohortName, getAdminClassCount, getAdminClassName, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt,
+                    getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt, getCoursesAtForGroup,
                     saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
                     saveTeacher, editTeacher, deleteTeacher, saveRoom, editRoom, deleteRoom,
                     saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel

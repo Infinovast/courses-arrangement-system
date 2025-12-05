@@ -45,6 +45,8 @@ def get_courses(
             "id": course.id,
             "name": course.name,
             "cohort_id": course.cohort_id,
+            "cohort_ids": course.cohort_ids or [],
+            "cohort_teaching_class_counts": course.cohort_teaching_class_counts or {},
             "teacher_id": course.teacher_id,
             "course_type": course.course_type,
             "theory_hours": course.theory_hours,
@@ -54,6 +56,7 @@ def get_courses(
             "dual_teacher_enabled": course.dual_teacher_enabled or False,
             "second_teacher_id": course.second_teacher_id,
             "teacher_split_week": course.teacher_split_week or 8,
+            "is_graduation_course": course.is_graduation_course or False,
             "preferred_pattern": course.preferred_pattern,
             "combined_with": course.combined_with or [],
             "teacher_override": course.teacher_override or {},
@@ -64,6 +67,7 @@ def get_courses(
                 "id": course.cohort.id,
                 "major": course.cohort.major,
                 "grade": course.cohort.grade,
+                "is_graduation": course.cohort.is_graduation or False,
                 "cohort_key": f"{course.cohort.major}-{course.cohort.grade}",
                 "created_at": course.cohort.created_at
             } if course.cohort else None,
@@ -94,6 +98,8 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
         "id": course.id,
         "name": course.name,
         "cohort_id": course.cohort_id,
+        "cohort_ids": course.cohort_ids or [],
+        "cohort_teaching_class_counts": course.cohort_teaching_class_counts or {},
         "teacher_id": course.teacher_id,
         "course_type": course.course_type,
         "theory_hours": course.theory_hours,
@@ -103,6 +109,7 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
         "dual_teacher_enabled": course.dual_teacher_enabled or False,
         "second_teacher_id": course.second_teacher_id,
         "teacher_split_week": course.teacher_split_week or 8,
+        "is_graduation_course": course.is_graduation_course or False,
         "preferred_pattern": course.preferred_pattern,
         "combined_with": course.combined_with or [],
         "teacher_override": course.teacher_override or {},
@@ -113,6 +120,7 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
             "id": course.cohort.id,
             "major": course.cohort.major,
             "grade": course.cohort.grade,
+            "is_graduation": course.cohort.is_graduation or False,
             "cohort_key": f"{course.cohort.major}-{course.cohort.grade}",
             "created_at": course.cohort.created_at
         } if course.cohort else None,
@@ -125,13 +133,61 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
     }
 
 
+def _validate_cohort_teaching_class_counts(cohort_ids: List[int], counts: Dict[str, float], db: Session):
+    """校验多专业教学班配置
+    
+    1. 所有cohort_ids中的专业都必须存在
+    2. counts中的cohort_id必须在cohort_ids中
+    3. 所有教学班数量总和必须是整数
+    """
+    if not cohort_ids:
+        return
+    
+    # 验证所有专业都存在
+    for cid in cohort_ids:
+        cohort = db.query(Cohort).filter(Cohort.id == cid).first()
+        if not cohort:
+            raise HTTPException(status_code=404, detail=f"专业年级ID {cid} 不存在")
+    
+    # 多专业时需要校验教学班配置
+    if len(cohort_ids) > 1:
+        if not counts:
+            raise HTTPException(status_code=400, detail="多专业课程必须配置各专业的教学班数量")
+        
+        # 校验counts中的cohort_id是否都在cohort_ids中
+        for cid_str in counts.keys():
+            if int(cid_str) not in cohort_ids:
+                raise HTTPException(status_code=400, detail=f"教学班配置中的专业ID {cid_str} 不在选择的专业列表中")
+        
+        # 校验总和是否为整数
+        total = sum(counts.values())
+        if not total.is_integer():
+            raise HTTPException(status_code=400, detail=f"各专业教学班数量总和必须是整数，当前总和为 {total}")
+
+
 @router.post("", response_model=CourseResponse, status_code=status.HTTP_201_CREATED, summary="添加课程")
 def create_course(data: CourseCreate, db: Session = Depends(get_db)):
-    """添加新课程"""
+    """添加新课程
+    
+    课程分类：
+    - 专业课：cohort_id不为空，或cohort_ids只有一个元素
+    - 公共课：cohort_id为空且cohort_ids为空，或cohort_ids有多个元素
+    """
+    # 判断是单专业还是多专业
+    is_multi_cohort = len(data.cohort_ids) > 1
+    is_single_cohort = data.cohort_id is not None or len(data.cohort_ids) == 1
+    
     # 验证专业年级存在
-    cohort = db.query(Cohort).filter(Cohort.id == data.cohort_id).first()
-    if not cohort:
-        raise HTTPException(status_code=404, detail="专业年级不存在")
+    if is_single_cohort and not is_multi_cohort:
+        # 单专业课
+        effective_cohort_id = data.cohort_id if data.cohort_id else (data.cohort_ids[0] if data.cohort_ids else None)
+        if effective_cohort_id:
+            cohort = db.query(Cohort).filter(Cohort.id == effective_cohort_id).first()
+            if not cohort:
+                raise HTTPException(status_code=404, detail="专业年级不存在")
+    elif is_multi_cohort:
+        # 多专业课，校验所有专业和教学班配置
+        _validate_cohort_teaching_class_counts(data.cohort_ids, data.cohort_teaching_class_counts, db)
 
     # 验证教师存在（如果指定）
     if data.teacher_id:
@@ -147,9 +203,18 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
     if data.course_type == "mixed" and (data.theory_hours <= 0 or data.lab_hours <= 0):
         raise HTTPException(status_code=400, detail="混合课程必须同时有理论和实验学时")
 
+    # 确定有效的cohort_id（单专业时使用）
+    effective_cohort_id = None
+    if data.cohort_id:
+        effective_cohort_id = data.cohort_id
+    elif len(data.cohort_ids) == 1:
+        effective_cohort_id = data.cohort_ids[0]
+
     course = Course(
         name=data.name,
-        cohort_id=data.cohort_id,
+        cohort_id=effective_cohort_id,
+        cohort_ids=data.cohort_ids if len(data.cohort_ids) > 1 else [],
+        cohort_teaching_class_counts=data.cohort_teaching_class_counts if len(data.cohort_ids) > 1 else {},
         teacher_id=data.teacher_id,
         course_type=data.course_type,
         theory_hours=data.theory_hours,
@@ -159,6 +224,7 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
         dual_teacher_enabled=data.dual_teacher_enabled,
         second_teacher_id=data.second_teacher_id,
         teacher_split_week=data.teacher_split_week,
+        is_graduation_course=data.is_graduation_course,
         preferred_pattern=data.preferred_pattern,
         combined_with=data.combined_with,
         teacher_override=data.teacher_override,
@@ -183,8 +249,29 @@ def update_course(course_id: int, data: CourseUpdate, db: Session = Depends(get_
         if not teacher:
             raise HTTPException(status_code=404, detail="教师不存在")
 
+    # 如果更新了cohort_ids，需要校验
+    if data.cohort_ids is not None and len(data.cohort_ids) > 1:
+        counts = data.cohort_teaching_class_counts if data.cohort_teaching_class_counts else course.cohort_teaching_class_counts
+        _validate_cohort_teaching_class_counts(data.cohort_ids, counts or {}, db)
+
     # 更新字段
     update_fields = data.model_dump(exclude_unset=True)
+    
+    # 处理cohort_id和cohort_ids的关联逻辑
+    if 'cohort_ids' in update_fields:
+        cohort_ids = update_fields['cohort_ids']
+        if len(cohort_ids) == 1:
+            # 单专业，设置cohort_id，清空cohort_ids
+            update_fields['cohort_id'] = cohort_ids[0]
+            update_fields['cohort_ids'] = []
+            update_fields['cohort_teaching_class_counts'] = {}
+        elif len(cohort_ids) > 1:
+            # 多专业，清空cohort_id
+            update_fields['cohort_id'] = None
+        else:
+            # 空列表，保持cohort_id不变或清空
+            pass
+    
     for field, value in update_fields.items():
         setattr(course, field, value)
 
@@ -276,7 +363,7 @@ def create_fixed_course(data: FixedScheduleCreate, db: Session = Depends(get_db)
     
     fixed = FixedSchedule(
         cohort_id=data.cohort_id,
-        group_tag=data.group_tag,
+        admin_class_ids=data.admin_class_ids or [],
         course_name=data.course_name,
         teacher_name=data.teacher_name,
         duration=data.duration,
@@ -312,7 +399,7 @@ def update_fixed_course(fixed_id: int, data: FixedScheduleCreate, db: Session = 
         raise HTTPException(status_code=404, detail="专业年级不存在")
     
     fixed.cohort_id = data.cohort_id
-    fixed.group_tag = data.group_tag
+    fixed.admin_class_ids = data.admin_class_ids or []
     fixed.course_name = data.course_name
     fixed.teacher_name = data.teacher_name
     fixed.duration = data.duration
@@ -368,13 +455,37 @@ def get_all_courses_unified(
         )
         
         if cohort_id:
-            query = query.filter(Course.cohort_id == cohort_id)
+            # 筛选单专业课或多专业课中包含该专业的
+            from sqlalchemy import or_, func
+            query = query.filter(
+                or_(
+                    Course.cohort_id == cohort_id,
+                    func.json_contains(Course.cohort_ids, str(cohort_id))
+                )
+            )
         if semester:
             query = query.filter((Course.semester == semester) | (Course.semester == "both"))
         
         courses = query.order_by(Course.cohort_id, Course.name).all()
         
+        # 预加载所有cohort用于多专业课程显示
+        all_cohorts = {c.id: c for c in db.query(Cohort).all()}
+        
         for course in courses:
+            # 构建cohort_name
+            cohort_name = None
+            cohort_ids = course.cohort_ids or []
+            if course.cohort_id:
+                cohort_name = f"{course.cohort.major}-{course.cohort.grade}" if course.cohort else None
+            elif cohort_ids:
+                # 多专业课，显示所有专业名称
+                names = []
+                for cid in cohort_ids:
+                    c = all_cohorts.get(cid)
+                    if c:
+                        names.append(f"{c.major}-{c.grade}")
+                cohort_name = ", ".join(names) if names else None
+            
             result.append({
                 "category": "regular",
                 "id": course.id,
@@ -382,13 +493,16 @@ def get_all_courses_unified(
                 "teacher_name": course.teacher.name if course.teacher else None,
                 "teacher_id": course.teacher_id,
                 "cohort_id": course.cohort_id,
-                "cohort_name": f"{course.cohort.major}-{course.cohort.grade}" if course.cohort else None,
+                "cohort_ids": cohort_ids,
+                "cohort_teaching_class_counts": course.cohort_teaching_class_counts or {},
+                "cohort_name": cohort_name,
                 "semester": course.semester or "first",
                 "course_type": course.course_type,
                 "theory_hours": course.theory_hours,
                 "lab_hours": course.lab_hours,
                 "teaching_class_count": course.teaching_class_count,
                 "dual_teacher_enabled": course.dual_teacher_enabled or False,
+                "is_graduation_course": course.is_graduation_course or False,
                 # 固定课特有字段设置为Null
                 "day": None,
                 "period": None,
@@ -428,7 +542,7 @@ def get_all_courses_unified(
                 "period": fixed.period,
                 "duration": fixed.duration,
                 "weeks": fixed.weeks,
-                "group_tag": fixed.group_tag,
+                "admin_class_ids": fixed.admin_class_ids or [],
             })
     
     return result

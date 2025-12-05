@@ -12,6 +12,7 @@ ALL_WEEKS = SEMESTER_WEEKS + [FINAL_REVIEW_WEEK]
 
 # *** 核心修正：根据您的要求，补充所有自定义周次 ***
 WEEKS_1_TO_14 = list(range(1, 15))
+WEEKS_5_TO_15 = list(range(5, 16))  # 毕业班32学时课程前期
 WEEKS_5_TO_16 = list(range(5, 17))
 WEEKS_5_TO_17 = list(range(5, 18))
 WEEKS_6_TO_17 = list(range(6, 18))

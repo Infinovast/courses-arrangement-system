@@ -3,8 +3,9 @@ from typing import Dict, Literal, Optional, Tuple, List
 
 CourseType = Literal['theory_only', 'mixed', 'lab_only']
 SchedulePattern = Literal[
-    'weekly', 'single_week', 'double_week', 'flexible_48h', 'weeks_1_to_14', 'weeks_5_to_16', 'weeks_5_to_17',
-    'weeks_6_to_17', 'weeks_1_to_8', 'weeks_9_to_16', 'weeks_16_to_17'
+    'weekly', 'single_week', 'double_week', 'flexible_48h', 'weeks_1_to_14', 'weeks_5_to_15', 'weeks_5_to_16', 'weeks_5_to_17',
+    'weeks_6_to_17', 'weeks_1_to_8', 'weeks_9_to_16', 'weeks_16_to_17',
+    'graduation_48h', 'graduation_32h_main', 'graduation_32h_makeup'  # 毕业班特殊模式
 ]
 
 
@@ -20,6 +21,7 @@ class Course:
     combined_with: List[str] = field(default_factory=list)
     teacher_override: Optional[Dict[int, str]] = None
     campus_teachers: List[str] = field(default_factory=list)
+    is_graduation_course: bool = False  # 毕业班课程标志
 
     # 新增：分阶段教师配置（key：阶段标识，value：(起始周, 结束周, 教师ID)）
     # 示例：{"phase1": (1,8,"T01"), "phase2": (9,16,"T02")}
@@ -35,6 +37,11 @@ class Course:
 
     def get_schedule_requirements(self, cohort_weekly_hours: Tuple[int, int] = None) -> Dict[str, Dict]:
         reqs = {}
+        
+        # 毕业班课程特殊处理
+        if self.is_graduation_course:
+            return self._get_graduation_requirements()
+        
         if self.theory_hours > 0:
             reqs['theory'] = self._calculate_pattern(
                 hours=self.theory_hours,
@@ -47,6 +54,72 @@ class Course:
                 is_lab=True,
                 cohort_weekly_hours=cohort_weekly_hours
             )
+        return reqs
+    
+    def _get_graduation_requirements(self) -> Dict[str, Dict]:
+        """毕业班课程特殊排课逻辑
+        
+        48学时课程: 第5-16周每周上2次课，每次连上2节
+            - 12周 x 2次 x 2节 = 48学时
+        
+        32学时课程: 第5-15周每周上1次课，每次连上2节；第16-17周每周上2次，一次连上2节，另一次连上3节
+            - 11周 x 1次 x 2节 = 22学时
+            - 2周 x 1次 x 2节 = 4学时
+            - 2周 x 1次 x 3节 = 6学时
+            - 总计: 22 + 4 + 6 = 32学时
+        """
+        reqs = {}
+        total_hours = self.theory_hours + self.lab_hours
+        is_lab = self.course_type == 'lab_only'
+        
+        if total_hours == 48:
+            # 48学时: 第5-16周，每周上2次，每次连上2节
+            part_key = 'lab' if is_lab else 'theory'
+            reqs[part_key] = {
+                'pattern': 'graduation_48h',
+                'hours_per_block': 2,
+                'total_blocks': 24,  # 12周 x 2次
+                'weekly_sessions': 2,
+                'description': '毕业班48学时: 第5-16周每周上2次课，每次连上2节'
+            }
+        elif total_hours == 32:
+            # 32学时: 拆分为两部分
+            part_key = 'lab' if is_lab else 'theory'
+            # 主要部分: 第5-15周，每周上1次，每次连上2节 (22学时)
+            reqs[part_key] = {
+                'pattern': 'graduation_32h_main',
+                'hours_per_block': 2,
+                'total_blocks': 11,  # 11周 x 1次
+                'weekly_sessions': 1,
+                'description': '毕业班32学时主体: 第5-15周每周上1次课，每次连上2节'
+            }
+            # 补课部分: 第16-17周，每周上2次 (2节+3节=5学时 x 2周 = 10学时)
+            # 由于32学时-22学时=10学时，需要2周补课
+            reqs[f'{part_key}_makeup_2h'] = {
+                'pattern': 'weeks_16_to_17',
+                'hours_per_block': 2,
+                'total_blocks': 2,  # 2周 x 1次
+                'weekly_sessions': 1,
+                'description': '毕业班32学时补课: 第16-17周每周上1次课，每次连上2节'
+            }
+            reqs[f'{part_key}_makeup_3h'] = {
+                'pattern': 'weeks_16_to_17',
+                'hours_per_block': 3,
+                'total_blocks': 2,  # 2周 x 1次
+                'weekly_sessions': 1,
+                'description': '毕业班32学时补课: 第16-17周每周上1次课，每次连上3节'
+            }
+        else:
+            # 其他学时的毕业班课程，默认使用5-17周
+            part_key = 'lab' if is_lab else 'theory'
+            reqs[part_key] = {
+                'pattern': 'weeks_5_to_17',
+                'hours_per_block': 2,
+                'total_blocks': total_hours // 2,
+                'weekly_sessions': 1,
+                'description': f'毕业班{total_hours}学时: 第5-17周'
+            }
+        
         return reqs
 
     def _calculate_pattern(self, hours: int, is_lab: bool, cohort_weekly_hours: Tuple[int, int] = None) -> Dict:
@@ -68,6 +141,8 @@ class Course:
                 return {'pattern': 'weeks_1_to_8', 'hours_per_block': 2, 'total_blocks': 8, 'weekly_sessions': 1}
             if self.preferred_pattern == 'weeks_9_to_16' and hours == 16:
                 return {'pattern': 'weeks_9_to_16', 'hours_per_block': 2, 'total_blocks': 8, 'weekly_sessions': 1}
+            if self.preferred_pattern == 'weeks_5_to_15' and hours == 22:
+                return {'pattern': 'weeks_5_to_15', 'hours_per_block': 2, 'total_blocks': 11, 'weekly_sessions': 1}
             if self.preferred_pattern == 'weeks_5_to_16' and hours == 48:
                 return {'pattern': 'weeks_5_to_16', 'hours_per_block': 2, 'total_blocks': 24, 'weekly_sessions': 2}
             if self.preferred_pattern == 'weeks_5_to_17' and hours == 26:

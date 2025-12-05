@@ -12,6 +12,7 @@ class Cohort(Base):
     id = Column(Integer, primary_key=True, index=True)
     major = Column(String(100), nullable=False, comment="专业名称")
     grade = Column(Integer, nullable=False, comment="年级")
+    is_graduation = Column(Boolean, default=False, comment="是否毕业年级")
     created_at = Column(DateTime, server_default=func.now())
 
     # 关联
@@ -36,6 +37,7 @@ class AdminClass(Base):
     cohort_id = Column(Integer, ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False)
     class_index = Column(Integer, nullable=False, comment="班级序号")
     student_count = Column(Integer, default=40, comment="学生人数")
+    is_graduation_class = Column(Boolean, default=False, comment="是否毕业班(5-17周或 5-16周)")
     created_at = Column(DateTime, server_default=func.now())
 
     # 关联
@@ -110,7 +112,9 @@ class Course(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(200), nullable=False, comment="课程名称")
-    cohort_id = Column(Integer, ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=True, comment="所属专业年级，NULL表示公共课")
+    cohort_id = Column(Integer, ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=True, comment="所属专业年级(单专业课使用)")
+    cohort_ids = Column(JSON, default=list, comment="多专业年级ID列表(多专业/公共课使用)")
+    cohort_teaching_class_counts = Column(JSON, default=dict, comment="各专业教学班数量配置 {cohort_id: count}")
     teacher_id = Column(Integer, ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, comment="授课教师")
 
     # 学期配置
@@ -173,11 +177,8 @@ class FixedSchedule(Base):
     cohort_id = Column(Integer, ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False)
     semester = Column(String(10), default="first", comment="学期: first(上册), second(下册), both(全年)")
     
-    # 子组标签配置
-    group_tag = Column(String(50), nullable=True, comment="子组标签(用于区分不同时间点的同一课程)")
-    requires_tag = Column(Boolean, default=False, comment="是否需要子组标签区分")
-    tag_count = Column(Integer, default=0, comment="标签数量(行政班数或教学班数)")
-    admin_class_indices = Column(JSON, default=list, comment="对应的行政班序号列表，如[1,3]表示1班和3班")
+    # 行政班配置：指定哪些行政班上这门固定课，为空表示全部行政班
+    admin_class_ids = Column(JSON, default=list, comment="行政班ID列表，为空表示该专业年级全部行政班")
     
     course_name = Column(String(200), nullable=False, comment="课程名称")
     teacher_name = Column(String(100), nullable=False, comment="教师姓名")

@@ -30,6 +30,7 @@ def get_cohorts(db: Session = Depends(get_db)):
             id=c.id,
             major=c.major,
             grade=c.grade,
+            is_graduation=c.is_graduation if hasattr(c, 'is_graduation') else False,
             cohort_key=f"{c.major}-{c.grade}",
             created_at=c.created_at
         ))
@@ -75,7 +76,11 @@ def create_cohort(cohort_data: CohortCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail=f"专业年级 {cohort_data.major}-{cohort_data.grade} 已存在")
 
-    cohort = Cohort(major=cohort_data.major, grade=cohort_data.grade)
+    cohort = Cohort(
+        major=cohort_data.major, 
+        grade=cohort_data.grade,
+        is_graduation=cohort_data.is_graduation
+    )
     db.add(cohort)
     db.commit()
     db.refresh(cohort)
@@ -84,6 +89,7 @@ def create_cohort(cohort_data: CohortCreate, db: Session = Depends(get_db)):
         id=cohort.id,
         major=cohort.major,
         grade=cohort.grade,
+        is_graduation=cohort.is_graduation,
         cohort_key=f"{cohort.major}-{cohort.grade}",
         created_at=cohort.created_at
     )
@@ -100,6 +106,14 @@ def update_cohort(cohort_id: int, data: CohortUpdate, db: Session = Depends(get_
         cohort.major = data.major
     if data.grade is not None:
         cohort.grade = data.grade
+    
+    # 处理毕业年级标志，并联动更新所有行政班
+    if data.is_graduation is not None:
+        cohort.is_graduation = data.is_graduation
+        # 联动更新该年级下所有行政班的毕业班标志
+        db.query(AdminClass).filter(AdminClass.cohort_id == cohort_id).update(
+            {AdminClass.is_graduation_class: data.is_graduation}
+        )
 
     # 检查更新后是否与其他记录冲突
     existing = db.query(Cohort).filter(
@@ -116,6 +130,7 @@ def update_cohort(cohort_id: int, data: CohortUpdate, db: Session = Depends(get_
         id=cohort.id,
         major=cohort.major,
         grade=cohort.grade,
+        is_graduation=cohort.is_graduation,
         cohort_key=f"{cohort.major}-{cohort.grade}",
         created_at=cohort.created_at
     )
@@ -160,10 +175,16 @@ def create_admin_class(data: AdminClassCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail=f"该专业年级的{data.class_index}班已存在")
 
+    # 如果专业年级是毕业年级，新建的行政班自动设为毕业班
+    is_graduation = data.is_graduation_class
+    if cohort.is_graduation:
+        is_graduation = True
+
     admin_class = AdminClass(
         cohort_id=data.cohort_id,
         class_index=data.class_index,
-        student_count=data.student_count
+        student_count=data.student_count,
+        is_graduation_class=is_graduation
     )
     db.add(admin_class)
     db.commit()
@@ -191,6 +212,9 @@ def update_admin_class(admin_class_id: int, data: AdminClassUpdate, db: Session 
 
     if data.student_count is not None:
         admin_class.student_count = data.student_count
+    
+    if data.is_graduation_class is not None:
+        admin_class.is_graduation_class = data.is_graduation_class
 
     db.commit()
     db.refresh(admin_class)
