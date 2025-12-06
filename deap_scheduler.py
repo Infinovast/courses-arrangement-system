@@ -222,11 +222,19 @@ class DeapScheduler:
             for part_key, req_data in reqs.items():
                 req = req_data.copy()
                 req['phase_weeks'] = phase_weeks
-                # 修复：记录 (课程ID + 教学班ID) 用于分组（确保仅同一教学班的分阶段任务被分组）
-                req['course_tc_id'] = f"{tc.course.id}_{tc.id}"
                 # 判断是否为实验课
                 is_lab = 'lab' in part_key
-                self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': req})
+                
+                # 根据 weekly_sessions 创建多个任务（每周多次课需要多个时间槽）
+                weekly_sessions = req.get('weekly_sessions', 1)
+                for session_idx in range(weekly_sessions):
+                    task_req = req.copy()
+                    task_req['session_idx'] = session_idx  # 记录是第几次课
+                    # course_tc_id 用于分阶段课程的时间一致性约束
+                    # 对于 weekly_sessions > 1 的课程，每个 session 有不同的 course_tc_id
+                    # 这样它们就不会被误判为"分阶段课程"而被惩罚时间不一致
+                    task_req['course_tc_id'] = f"{tc.course.id}_{tc.id}_s{session_idx}"
+                    self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': task_req})
 
     def _prepare_jit_parameters(self):
         self.jit_params = {}

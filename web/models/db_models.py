@@ -145,7 +145,8 @@ class Course(Base):
     start_week = Column(Integer, default=1, comment="开始周次")
     end_week = Column(Integer, default=16, comment="结束周次")
     combined_with = Column(JSON, default=list, comment="合班课程ID列表（已废弃，使用combined_group_id）")
-    teacher_override = Column(JSON, default=dict, comment="特定教学班的教师覆盖 {班号: 教师ID}")
+    teacher_override = Column(JSON, default=dict, comment="特定教学班的教师覆盖 {班号: 教师ID}【已废弃，使用teacher_configs】")
+    teacher_configs = Column(JSON, default=list, comment="多教师配置 [{teacher_id, class_count, dual_enabled, second_teacher_id, split_week}]")
     phase_teachers = Column(JSON, default=dict, comment="分阶段教师 {阶段: [起始周, 结束周, 教师ID]}")
 
     # 毕业年级特殊处理

@@ -510,7 +510,7 @@
                                         下册
                                     </button>
                                 </div>
-                                <select v-model="filterCohortId" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="filterCourseCategory === 'public'">
+                                <select v-model="filterCohortId" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
                                     <option :value="null">全部专业年级</option>
                                     <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                                 </select>
@@ -565,7 +565,7 @@
                                             <span v-if="course.category === 'fixed'">{{ getAdminClassNames(course.admin_class_ids) }}</span>
                                             <span v-else>-</span>
                                         </td>
-                                        <td class="px-6 py-4 text-sm">{{ course.teacher_name || '-' }}</td>
+                                        <td class="px-6 py-4 text-sm">{{ getCourseTeachers(course) }}</td>
                                         <td class="px-6 py-4">
                                             <span v-if="course.category === 'fixed'" class="text-xs text-gray-400">
                                                 周{{ course.day }} 第{{ course.period }}节
@@ -816,15 +816,22 @@
                                             <input v-model="form.course_name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：大学英语、体育">
                                         </div>
                                         <div>
-                                            <label class="block text-sm text-gray-400 mb-2">专业年级</label>
-                                            <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
-                                                <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
+                                            <label class="block text-sm text-gray-400 mb-2">学期</label>
+                                            <select v-model="form.semester" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                                <option value="first">上册</option>
+                                                <option value="second">下册</option>
                                             </select>
                                         </div>
                                         <div>
                                             <label class="block text-sm text-gray-400 mb-2">教师姓名</label>
                                             <input v-model="form.teacher_name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" placeholder="如：外聘教师1">
                                         </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-gray-400 mb-2">专业年级</label>
+                                        <select v-model.number="form.cohort_id" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                                            <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
+                                        </select>
                                     </div>
                                     <div class="grid grid-cols-3 gap-4">
                                         <div>
@@ -893,8 +900,10 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-2">授课教师</label>
-                            <select v-model.number="form.teacher_id" class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
+                            <label class="block text-sm text-gray-400 mb-2">授课教师 <span v-if="form.multi_teacher_enabled" class="text-xs text-purple-400">(已启用多教师模式)</span></label>
+                            <select v-model.number="form.teacher_id" 
+                                :disabled="form.multi_teacher_enabled"
+                                :class="['w-full px-4 py-3 rounded-lg border focus:border-accent-500', form.multi_teacher_enabled ? 'bg-dark-800 border-gray-800 text-gray-500 cursor-not-allowed' : 'bg-dark-700 border-gray-700']">
                                 <option :value="null">未指定</option>
                                 <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
                             </select>
@@ -969,8 +978,70 @@
                         </div>
                     </div>
                     
-                    <!-- 双教师配置 -->
-                    <div class="border-t border-gray-700 pt-4">
+                    <!-- 多教师分教学班配置 (只有单专业课程才可用) -->
+                    <div v-if="effectiveTeachingClassCount > 1 && canUseMultiTeacher" class="border-t border-gray-700 pt-4">
+                        <div class="flex items-center space-x-3 mb-3">
+                            <input v-model="form.multi_teacher_enabled" type="checkbox" id="multiTeacher" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-purple-500 focus:ring-purple-500">
+                            <label for="multiTeacher" class="text-sm">多教师分教学班</label>
+                            <span class="text-xs text-gray-500">(不同教师带不同数量的教学班)</span>
+                        </div>
+                        <div v-if="form.multi_teacher_enabled" class="space-y-3 pl-2">
+                            <!-- 教师列表 -->
+                            <div v-for="(config, index) in form.teacher_configs" :key="index" class="p-3 rounded-lg border border-gray-600" style="background: var(--bg-tertiary);">
+                                <div class="flex items-center space-x-3 mb-2">
+                                    <select v-model="config.teacher_id" class="flex-1 px-3 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500 text-sm">
+                                        <option :value="null">选择教师</option>
+                                        <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
+                                    </select>
+                                    <span class="text-sm text-gray-400">带</span>
+                                    <input type="number" v-model.number="config.class_count" min="1" :max="effectiveTeachingClassCount" 
+                                        class="w-16 px-2 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500 text-sm text-center">
+                                    <span class="text-sm text-gray-400">个教学班</span>
+                                    <button type="button" @click="removeTeacherConfig(index)" class="text-red-400 hover:text-red-300 px-2">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                <!-- 双教师配置 -->
+                                <div class="mt-2 pt-2 border-t border-gray-600">
+                                    <label class="inline-flex items-center space-x-2 cursor-pointer">
+                                        <input type="checkbox" v-model="config.dual_enabled" class="w-4 h-4 rounded bg-dark-700 border-gray-700 text-accent-500 focus:ring-accent-500">
+                                        <span class="text-xs text-gray-400">双教师 (A教师1-N周，B教师N+1-16周)</span>
+                                    </label>
+                                    <div v-if="config.dual_enabled" class="grid grid-cols-2 gap-3 mt-2">
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">B教师</label>
+                                            <select v-model="config.second_teacher_id" class="w-full px-2 py-1.5 bg-dark-700 rounded border border-gray-700 focus:border-accent-500 text-sm">
+                                                <option :value="null">未指定</option>
+                                                <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.name }}</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">切换周</label>
+                                            <input type="number" v-model.number="config.split_week" min="1" max="15" 
+                                                class="w-full px-2 py-1.5 bg-dark-700 rounded border border-gray-700 focus:border-accent-500 text-sm">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- 添加教师按钮 -->
+                            <button type="button" @click="addTeacherConfig" class="w-full py-2 border border-dashed border-gray-600 rounded-lg text-gray-400 hover:border-purple-500 hover:text-purple-400 transition-colors text-sm">
+                                <i class="fas fa-plus mr-1"></i> 添加教师
+                            </button>
+                            
+                            <!-- 校验提示 -->
+                            <div class="flex justify-between items-center text-sm mt-2">
+                                <span class="text-gray-400">已分配教学班数:</span>
+                                <span :class="teacherConfigTotal === effectiveTeachingClassCount ? 'text-green-400' : 'text-red-400'">
+                                    {{ teacherConfigTotal }} / {{ effectiveTeachingClassCount }}
+                                    <span v-if="teacherConfigTotal !== effectiveTeachingClassCount" class="text-xs">(需等于总教学班数)</span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 双教师配置(单教师模式时显示) -->
+                    <div v-if="!form.multi_teacher_enabled" class="border-t border-gray-700 pt-4">
                         <div class="flex items-center space-x-3 mb-4">
                             <input v-model="form.dual_teacher_enabled" type="checkbox" id="dualTeacher" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-accent-500 focus:ring-accent-500">
                             <label for="dualTeacher" class="text-sm">双教师授课 (A教师1-8周，B教师9-16周)</label>
@@ -1009,8 +1080,11 @@
 
         <!-- Toast 通知 -->
         <div v-if="toast.show" class="fixed bottom-8 right-8 z-50 slide-in">
-            <div :class="['px-6 py-4 rounded-xl shadow-lg flex items-center space-x-3', toast.type === 'success' ? 'bg-green-500/90' : 'bg-red-500/90']">
-                <i :class="toast.type === 'success' ? 'fas fa-check-circle' : 'fas fa-exclamation-circle'"></i>
+            <div :class="['px-6 py-4 rounded-xl shadow-lg flex items-center space-x-3', 
+                toast.type === 'success' ? 'bg-green-500/90' : 
+                toast.type === 'warning' ? 'bg-yellow-500/90' : 'bg-red-500/90']">
+                <i :class="toast.type === 'success' ? 'fas fa-check-circle' : 
+                    toast.type === 'warning' ? 'fas fa-exclamation-triangle' : 'fas fa-exclamation-circle'"></i>
                 <span>{{ toast.message }}</span>
             </div>
         </div>
@@ -1332,6 +1406,44 @@
                     }).filter(Boolean);
                     return names.length > 0 ? names.join(', ') : '全部';
                 };
+                
+                // 获取课程的所有教师名称(包括双教师和多教师分教学班)
+                const getCourseTeachers = (course) => {
+                    if (course.category === 'fixed') {
+                        return course.teacher_name || '-';
+                    }
+                    
+                    const teacherNames = new Set();
+                    
+                    // 1. 多教师分教学班配置中的教师
+                    if (course.teacher_configs && course.teacher_configs.length > 0) {
+                        for (const config of course.teacher_configs) {
+                            // 主教师
+                            if (config.teacher_id) {
+                                const t = teachers.value.find(x => x.id === config.teacher_id);
+                                if (t) teacherNames.add(t.name);
+                            }
+                            // 双教师中的B教师
+                            if (config.dual_enabled && config.second_teacher_id) {
+                                const t = teachers.value.find(x => x.id === config.second_teacher_id);
+                                if (t) teacherNames.add(t.name);
+                            }
+                        }
+                    } else {
+                        // 2. 单教师模式
+                        if (course.teacher_name) {
+                            teacherNames.add(course.teacher_name);
+                        }
+                        // 双教师配置中的B教师
+                        if (course.dual_teacher_enabled && course.second_teacher_id) {
+                            const t = teachers.value.find(x => x.id === course.second_teacher_id);
+                            if (t) teacherNames.add(t.name);
+                        }
+                    }
+                    
+                    if (teacherNames.size === 0) return '-';
+                    return Array.from(teacherNames).join(', ');
+                };
 
                 const getCoursesAt = (day, period) => {
                     // 考虑课程的持续节次，如果课程从第1节开始持续2节，则在第1节和第2节都应该显示
@@ -1353,85 +1465,172 @@
                     });
                 };
                 
-                // 按时间冲突分组课表：同一时间段的冲突课程分到不同课表，没冲突的课程填充到所有课表
+                // 按教学班分组课表：同一门课的不同教学班分开显示
+                // 解决问题：当一个行政班涉及多个教学班（如线性代数2班同时属于教学班1和教学班2）
+                // 需要分成多张课表显示，让用户知道这个班的学生被分成了不同的组
+                // 支持多门课程的笛卡尔积：如果课程A有2个教学班，课程B有2个教学班，则需要2×2=4张课表
                 const groupedSchedules = computed(() => {
                     if (!selectedAdminClass.value || scheduleResults.value.length === 0) {
                         return [];
                     }
                     
-                    // 第一步：找出所有冲突组
-                    // timeSlotMap: 时间槽 -> [课程列表]
-                    const timeSlotMap = new Map();
+                    // 第一步：找出同一门课程的不同教学班
+                    // courseNameToTcIds: 课程名 -> [teaching_class_id 列表]
+                    const courseNameToTcIds = new Map();
                     for (const course of scheduleResults.value) {
-                        const duration = course.duration || 1;
-                        for (let p = course.period; p < course.period + duration; p++) {
-                            const slot = `${course.day}-${p}`;
-                            if (!timeSlotMap.has(slot)) {
-                                timeSlotMap.set(slot, []);
+                        const courseName = course.course_name;
+                        const tcId = course.teaching_class_id;
+                        if (!courseNameToTcIds.has(courseName)) {
+                            courseNameToTcIds.set(courseName, new Set());
+                        }
+                        courseNameToTcIds.get(courseName).add(tcId);
+                    }
+                    
+                    // 第二步：找出当前行政班实际涉及的多教学班课程
+                    // 注意：只有当该行政班实际涉及某门课的多个教学班时，才需要分表
+                    // multiTcCourses: [{courseName, tcIds: [...]}, ...]
+                    const multiTcCourses = [];
+                    for (const [courseName, tcIdSet] of courseNameToTcIds.entries()) {
+                        // 只有当该行政班涉及这门课的多个教学班时才需要分表
+                        if (tcIdSet.size > 1) {
+                            multiTcCourses.push({
+                                courseName,
+                                tcIds: [...tcIdSet]
+                            });
+                        }
+                    }
+                    
+                    // 如果没有多教学班课程，检查时间冲突
+                    if (multiTcCourses.length === 0) {
+                        // 回退到时间冲突检测逻辑
+                        const timeSlotMap = new Map();
+                        for (const course of scheduleResults.value) {
+                            const duration = course.duration || 1;
+                            for (let p = course.period; p < course.period + duration; p++) {
+                                const slot = `${course.day}-${p}`;
+                                if (!timeSlotMap.has(slot)) {
+                                    timeSlotMap.set(slot, []);
+                                }
+                                timeSlotMap.get(slot).push(course);
                             }
-                            timeSlotMap.get(slot).push(course);
-                        }
-                    }
-                    
-                    // 第二步：找出有冲突的课程和无冲突的课程
-                    const conflictCourses = new Set(); // 有冲突的课程ID
-                    for (const [slot, courses] of timeSlotMap.entries()) {
-                        // 去重（同一课程可能占用多个时间槽）
-                        const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
-                        if (uniqueCourses.length > 1) {
-                            uniqueCourses.forEach(c => conflictCourses.add(c.id));
-                        }
-                    }
-                    
-                    // 无冲突的课程
-                    const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourses.has(c.id));
-                    // 有冲突的课程
-                    const conflictCourseList = scheduleResults.value.filter(c => conflictCourses.has(c.id));
-                    
-                    // 如果没有冲突，直接返回一张课表
-                    if (conflictCourseList.length === 0) {
-                        return [scheduleResults.value];
-                    }
-                    
-                    // 第三步：将有冲突的课程分组
-                    const scheduleGroups = [];
-                    for (const course of conflictCourseList) {
-                        const courseSlots = new Set();
-                        const duration = course.duration || 1;
-                        for (let p = course.period; p < course.period + duration; p++) {
-                            courseSlots.add(`${course.day}-${p}`);
                         }
                         
-                        let placed = false;
-                        for (const group of scheduleGroups) {
-                            let hasConflict = false;
-                            for (const existingCourse of group.conflictCourses) {
-                                const existingDuration = existingCourse.duration || 1;
-                                for (let p = existingCourse.period; p < existingCourse.period + existingDuration; p++) {
-                                    if (courseSlots.has(`${existingCourse.day}-${p}`)) {
-                                        hasConflict = true;
-                                        break;
-                                    }
-                                }
-                                if (hasConflict) break;
-                            }
-                            
-                            if (!hasConflict) {
-                                group.conflictCourses.push(course);
-                                placed = true;
+                        let hasTimeConflict = false;
+                        for (const [slot, courses] of timeSlotMap.entries()) {
+                            const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
+                            if (uniqueCourses.length > 1) {
+                                hasTimeConflict = true;
                                 break;
                             }
                         }
                         
-                        if (!placed) {
-                            scheduleGroups.push({ conflictCourses: [course] });
+                        if (!hasTimeConflict) {
+                            return [scheduleResults.value];
+                        }
+                        
+                        // 有时间冲突，按时间冲突分组
+                        const conflictCourses = new Set();
+                        for (const [slot, courses] of timeSlotMap.entries()) {
+                            const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
+                            if (uniqueCourses.length > 1) {
+                                uniqueCourses.forEach(c => conflictCourses.add(c.id));
+                            }
+                        }
+                        
+                        const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourses.has(c.id));
+                        const conflictCourseList = scheduleResults.value.filter(c => conflictCourses.has(c.id));
+                        
+                        const scheduleGroups = [];
+                        for (const course of conflictCourseList) {
+                            const courseSlots = new Set();
+                            const duration = course.duration || 1;
+                            for (let p = course.period; p < course.period + duration; p++) {
+                                courseSlots.add(`${course.day}-${p}`);
+                            }
+                            
+                            let placed = false;
+                            for (const group of scheduleGroups) {
+                                let hasConflict = false;
+                                for (const existingCourse of group) {
+                                    const existingDuration = existingCourse.duration || 1;
+                                    for (let p = existingCourse.period; p < existingCourse.period + existingDuration; p++) {
+                                        if (courseSlots.has(`${existingCourse.day}-${p}`)) {
+                                            hasConflict = true;
+                                            break;
+                                        }
+                                    }
+                                    if (hasConflict) break;
+                                }
+                                
+                                if (!hasConflict) {
+                                    group.push(course);
+                                    placed = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!placed) {
+                                scheduleGroups.push([course]);
+                            }
+                        }
+                        
+                        return scheduleGroups.map(group => [...nonConflictCourses, ...group]);
+                    }
+                    
+                    // 第三步：生成笛卡尔积组合
+                    // 如果课程A有2个教学班[A1,A2]，课程B有3个教学班[B1,B2,B3]
+                    // 则需要生成2×3=6个组合：(A1,B1), (A1,B2), (A1,B3), (A2,B1), (A2,B2), (A2,B3)
+                    // 每个组合对应一张课表
+                    
+                    // 生成所有组合
+                    let combinations = [[]];
+                    for (const { courseName, tcIds } of multiTcCourses) {
+                        const newCombinations = [];
+                        for (const combo of combinations) {
+                            for (const tcId of tcIds) {
+                                newCombinations.push([...combo, { courseName, tcId }]);
+                            }
+                        }
+                        combinations = newCombinations;
+                    }
+                    
+                    // 第四步：为每个组合生成课表
+                    // 单教学班课程放到所有课表，多教学班课程按组合匹配
+                    const singleTcCourses = scheduleResults.value.filter(c => {
+                        const tcIdSet = courseNameToTcIds.get(c.course_name);
+                        return !tcIdSet || tcIdSet.size <= 1;
+                    });
+                    
+                    const scheduleGroups = combinations.map(combo => {
+                        // combo: [{courseName, tcId}, ...]
+                        const comboMap = new Map(combo.map(item => [item.courseName, item.tcId]));
+                        
+                        // 筛选多教学班课程：只保留匹配当前组合的教学班
+                        const matchedMultiTcCourses = scheduleResults.value.filter(c => {
+                            const tcIdSet = courseNameToTcIds.get(c.course_name);
+                            if (!tcIdSet || tcIdSet.size <= 1) return false;
+                            // 检查该课程的教学班ID是否匹配当前组合
+                            const expectedTcId = comboMap.get(c.course_name);
+                            return c.teaching_class_id === expectedTcId;
+                        });
+                        
+                        return [...singleTcCourses, ...matchedMultiTcCourses];
+                    });
+                    
+                    // 过滤空组和重复组
+                    const uniqueGroups = [];
+                    const seenKeys = new Set();
+                    for (const group of scheduleGroups) {
+                        if (group.length === 0) continue;
+                        // 生成组的唯一标识（按课程ID排序后拼接）
+                        const key = group.map(c => c.id).sort().join(',');
+                        if (!seenKeys.has(key)) {
+                            seenKeys.add(key);
+                            uniqueGroups.push(group);
                         }
                     }
                     
-                    // 第四步：为每个课表组添加无冲突的课程，形成完整课表
-                    return scheduleGroups.map(group => {
-                        return [...nonConflictCourses, ...group.conflictCourses];
-                    });
+                    return uniqueGroups;
                 });
 
                 // 计算属性: 多专业教学班总数
@@ -1439,6 +1638,51 @@
                     if (!form.value.cohort_teaching_class_counts) return 0;
                     return Object.values(form.value.cohort_teaching_class_counts).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
                 });
+                
+                // 计算属性: 有效教学班总数
+                const effectiveTeachingClassCount = computed(() => {
+                    if (form.value.cohort_ids && form.value.cohort_ids.length > 1) {
+                        // 多专业模式: 取各专业教学班数的总和(向上取整)
+                        return Math.ceil(cohortTeachingClassTotal.value) || 1;
+                    }
+                    return form.value.teaching_class_count || 1;
+                });
+                
+                // 计算属性: 教师配置的教学班总数
+                const teacherConfigTotal = computed(() => {
+                    if (!form.value.teacher_configs) return 0;
+                    return form.value.teacher_configs.reduce((sum, c) => sum + (c.class_count || 0), 0);
+                });
+                
+                // 计算属性: 是否可以使用多教师分教学班功能（只有单专业课程才可以）
+                const canUseMultiTeacher = computed(() => {
+                    // 多专业课程不支持多教师分教学班
+                    if (form.value.cohort_ids && form.value.cohort_ids.length > 1) {
+                        return false;
+                    }
+                    return true;
+                });
+                
+                // 添加教师配置
+                const addTeacherConfig = () => {
+                    if (!form.value.teacher_configs) {
+                        form.value.teacher_configs = [];
+                    }
+                    form.value.teacher_configs.push({
+                        teacher_id: null,
+                        class_count: 1,
+                        dual_enabled: false,
+                        second_teacher_id: null,
+                        split_week: 8
+                    });
+                };
+                
+                // 删除教师配置
+                const removeTeacherConfig = (index) => {
+                    if (form.value.teacher_configs) {
+                        form.value.teacher_configs.splice(index, 1);
+                    }
+                };
                 
                 // 更新某个专业的教学班数量
                 const updateCohortTeachingClassCount = (cohortId, value) => {
@@ -1449,7 +1693,14 @@
                 };
                 
                 // 监听 cohort_ids 变化，自动初始化教学班数量默认值
-                watch(() => form.value.cohort_ids, (newIds) => {
+                watch(() => form.value.cohort_ids, (newIds, oldIds) => {
+                    // 如果变为多专业，重置多教师配置
+                    if (newIds && newIds.length > 1 && form.value.multi_teacher_enabled) {
+                        form.value.multi_teacher_enabled = false;
+                        form.value.teacher_configs = [];
+                        showToast('多专业课程不支持多教师分教学班，已自动重置', 'warning');
+                    }
+                    
                     if (!newIds || newIds.length <= 1) return;
                     if (!form.value.cohort_teaching_class_counts) {
                         form.value.cohort_teaching_class_counts = {};
@@ -1467,14 +1718,28 @@
                         }
                     }
                 }, { deep: true });
+                
+                // 监听 multi_teacher_enabled 变化，启用时自动带入默认授课教师
+                watch(() => form.value.multi_teacher_enabled, (enabled) => {
+                    if (enabled && (!form.value.teacher_configs || form.value.teacher_configs.length === 0)) {
+                        // 启用多教师且列表为空时，自动添加默认授课教师
+                        form.value.teacher_configs = [{
+                            teacher_id: form.value.teacher_id || null,
+                            class_count: effectiveTeachingClassCount.value,
+                            dual_enabled: form.value.dual_teacher_enabled || false,
+                            second_teacher_id: form.value.second_teacher_id || null,
+                            split_week: form.value.teacher_split_week || 8
+                        }];
+                    }
+                });
 
                 // 模态框
                 const openModal = (type) => {
                     modalType.value = type;
                     form.value = type === 'adminClass' ? { student_count: 40, is_graduation_class: false } : 
                                  type === 'room' ? { capacity: 50 } : 
-                                 type === 'course' ? { course_type: 'theory_only', theory_hours: 0, lab_hours: 0, teaching_class_count: 1, semester: 'first', dual_teacher_enabled: false, teacher_split_week: 8, is_graduation_course: false, cohort_ids: [], cohort_teaching_class_counts: {} } : 
-                                 type === 'fixedCourse' ? { day: 1, period: 1, duration: 2, weeks_str: '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16', admin_class_ids: [] } :
+                                 type === 'course' ? { course_type: 'theory_only', theory_hours: 0, lab_hours: 0, teaching_class_count: 1, semester: 'first', dual_teacher_enabled: false, teacher_split_week: 8, is_graduation_course: false, cohort_ids: [], cohort_teaching_class_counts: {}, multi_teacher_enabled: false, teacher_configs: [] } : 
+                                 type === 'fixedCourse' ? { day: 1, period: 1, duration: 2, weeks_str: '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16', admin_class_ids: [], semester: filterSemester.value || 'first' } :
                                  type === 'cohort' ? { is_graduation: false } : {};
                     showModal.value = true;
                 };
@@ -1585,6 +1850,23 @@
                         }
                     }
                     
+                    // 多教师模式时校验教学班分配总数
+                    if (form.value.multi_teacher_enabled) {
+                        const configTotal = teacherConfigTotal.value;
+                        const expectedTotal = effectiveTeachingClassCount.value;
+                        if (configTotal !== expectedTotal) {
+                            showToast(`教师分配的教学班数(${configTotal})必须等于总教学班数(${expectedTotal})`, 'error');
+                            return;
+                        }
+                        // 校验是否每个教师都选择了
+                        for (let i = 0; i < form.value.teacher_configs.length; i++) {
+                            if (!form.value.teacher_configs[i].teacher_id) {
+                                showToast(`请为第 ${i + 1} 个教师配置选择教师`, 'error');
+                                return;
+                            }
+                        }
+                    }
+                    
                     // 单专业时，从 cohort_ids 设置 cohort_id
                     const payload = { ...form.value };
                     if (payload.cohort_ids && payload.cohort_ids.length === 1) {
@@ -1604,13 +1886,20 @@
 
                 const editCourse = (course) => {
                     form.value = { ...course };
-                    // 确保 cohort_ids 存在
-                    if (!form.value.cohort_ids) {
+                    // 确保 cohort_ids 存在且正确初始化
+                    // 如果 cohort_ids 不存在或为空数组，从 cohort_id 初始化
+                    if (!form.value.cohort_ids || form.value.cohort_ids.length === 0) {
                         form.value.cohort_ids = form.value.cohort_id ? [form.value.cohort_id] : [];
                     }
                     if (!form.value.cohort_teaching_class_counts) {
                         form.value.cohort_teaching_class_counts = {};
                     }
+                    // 初始化多教师相关字段
+                    if (!form.value.teacher_configs) {
+                        form.value.teacher_configs = [];
+                    }
+                    // 如果有 teacher_configs 数据，说明启用了多教师模式
+                    form.value.multi_teacher_enabled = form.value.teacher_configs && form.value.teacher_configs.length > 0;
                     modalType.value = 'course';
                     showModal.value = true;
                 };
@@ -1635,7 +1924,8 @@
                         period: form.value.period,
                         duration: form.value.duration,
                         weeks: weeks,
-                        admin_class_ids: form.value.admin_class_ids || []
+                        admin_class_ids: form.value.admin_class_ids || [],
+                        semester: form.value.semester || 'first'
                     };
                     const method = form.value.id ? 'PUT' : 'POST';
                     const url = form.value.id ? `/courses/fixed/${form.value.id}` : '/courses/fixed';
@@ -1656,7 +1946,8 @@
                         period: course.period,
                         duration: course.duration,
                         weeks_str: course.weeks ? course.weeks.join(',') : '',
-                        admin_class_ids: course.admin_class_ids || []
+                        admin_class_ids: course.admin_class_ids || [],
+                        semester: course.semester || 'first'
                     };
                     modalType.value = 'fixedCourse';
                     showModal.value = true;
@@ -1744,9 +2035,10 @@
                     currentTheme, setTheme, customColor, customThemeStyle, onCustomColorChange,
                     cohorts, adminClasses, teachers, rooms, courses, fixedCourses, unifiedCourses, scheduleResults, latestSession,
                     form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle, gradeYears, groupedSchedules,
-                    cohortTeachingClassTotal, updateCohortTeachingClassCount,
+                    cohortTeachingClassTotal, updateCohortTeachingClassCount, effectiveTeachingClassCount, teacherConfigTotal, canUseMultiTeacher,
+                    addTeacherConfig, removeTeacherConfig,
                     refreshData, openModal, closeModal, showToast, formatDate, getStatusText,
-                    getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt, getCoursesAtForGroup,
+                    getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTeachers, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt, getCoursesAtForGroup,
                     saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
                     saveTeacher, editTeacher, deleteTeacher, saveRoom, editRoom, deleteRoom,
                     saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel

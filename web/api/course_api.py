@@ -60,6 +60,7 @@ def get_courses(
             "preferred_pattern": course.preferred_pattern,
             "combined_with": course.combined_with or [],
             "teacher_override": course.teacher_override or {},
+            "teacher_configs": course.teacher_configs or [],
             "phase_teachers": course.phase_teachers or {},
             "created_at": course.created_at,
             "updated_at": course.updated_at,
@@ -113,6 +114,7 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
         "preferred_pattern": course.preferred_pattern,
         "combined_with": course.combined_with or [],
         "teacher_override": course.teacher_override or {},
+        "teacher_configs": course.teacher_configs or [],
         "phase_teachers": course.phase_teachers or {},
         "created_at": course.created_at,
         "updated_at": course.updated_at,
@@ -213,7 +215,7 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
     course = Course(
         name=data.name,
         cohort_id=effective_cohort_id,
-        cohort_ids=data.cohort_ids if len(data.cohort_ids) > 1 else [],
+        cohort_ids=data.cohort_ids,  # 保留cohort_ids，单专业时也保留[cohort_id]
         cohort_teaching_class_counts=data.cohort_teaching_class_counts if len(data.cohort_ids) > 1 else {},
         teacher_id=data.teacher_id,
         course_type=data.course_type,
@@ -228,6 +230,7 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
         preferred_pattern=data.preferred_pattern,
         combined_with=data.combined_with,
         teacher_override=data.teacher_override,
+        teacher_configs=data.teacher_configs,
         phase_teachers=data.phase_teachers
     )
     db.add(course)
@@ -261,9 +264,9 @@ def update_course(course_id: int, data: CourseUpdate, db: Session = Depends(get_
     if 'cohort_ids' in update_fields:
         cohort_ids = update_fields['cohort_ids']
         if len(cohort_ids) == 1:
-            # 单专业，设置cohort_id，清空cohort_ids
+            # 单专业，设置cohort_id，保留cohort_ids以便前端正确显示
             update_fields['cohort_id'] = cohort_ids[0]
-            update_fields['cohort_ids'] = []
+            # 保留 cohort_ids = [cohort_id]，不清空
             update_fields['cohort_teaching_class_counts'] = {}
         elif len(cohort_ids) > 1:
             # 多专业，清空cohort_id
@@ -369,7 +372,8 @@ def create_fixed_course(data: FixedScheduleCreate, db: Session = Depends(get_db)
         duration=data.duration,
         weeks=data.weeks,
         day=data.day,
-        period=data.period
+        period=data.period,
+        semester=data.semester or "first"
     )
     db.add(fixed)
     db.commit()
@@ -406,6 +410,7 @@ def update_fixed_course(fixed_id: int, data: FixedScheduleCreate, db: Session = 
     fixed.weeks = data.weeks
     fixed.day = data.day
     fixed.period = data.period
+    fixed.semester = data.semester or "first"
     
     db.commit()
     db.refresh(fixed)
@@ -502,7 +507,10 @@ def get_all_courses_unified(
                 "lab_hours": course.lab_hours,
                 "teaching_class_count": course.teaching_class_count,
                 "dual_teacher_enabled": course.dual_teacher_enabled or False,
+                "second_teacher_id": course.second_teacher_id,
+                "teacher_split_week": course.teacher_split_week or 8,
                 "is_graduation_course": course.is_graduation_course or False,
+                "teacher_configs": course.teacher_configs or [],
                 # 固定课特有字段设置为Null
                 "day": None,
                 "period": None,

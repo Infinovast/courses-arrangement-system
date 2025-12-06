@@ -154,7 +154,8 @@ class CourseBase(BaseModel):
 class CourseCreate(CourseBase):
     preferred_pattern: Optional[str] = Field(None, description="排课周次模式")
     combined_with: List[int] = Field(default=[], description="合班课程ID列表")
-    teacher_override: Dict[int, int] = Field(default={}, description="特定教学班的教师覆盖")
+    teacher_override: Dict[int, int] = Field(default={}, description="特定教学班的教师覆盖【已废弃】")
+    teacher_configs: List[Dict[str, Any]] = Field(default=[], description="多教师配置 [{teacher_id, class_count, dual_enabled, second_teacher_id, split_week}]")
     phase_teachers: Dict[str, List] = Field(default={}, description="分阶段教师配置")
 
 
@@ -176,6 +177,7 @@ class CourseUpdate(BaseModel):
     preferred_pattern: Optional[str] = None
     combined_with: Optional[List[int]] = None
     teacher_override: Optional[Dict[int, int]] = None
+    teacher_configs: Optional[List[Dict[str, Any]]] = None
     phase_teachers: Optional[Dict[str, List]] = None
 
 
@@ -185,6 +187,7 @@ class CourseResponse(CourseBase):
     preferred_pattern: Optional[str] = None
     combined_with: List[int] = []
     teacher_override: Dict[str, Any] = {}
+    teacher_configs: List[Dict[str, Any]] = []
     phase_teachers: Dict[str, Any] = {}
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -208,6 +211,7 @@ class FixedScheduleBase(BaseModel):
     weeks: List[int]
     day: int = Field(..., ge=1, le=5)
     period: int = Field(..., ge=1, le=11)
+    semester: str = Field(default="first", description="学期: first(上册), second(下册), both(全年)")
 
 
 class FixedScheduleCreate(FixedScheduleBase):

@@ -118,9 +118,30 @@ class ScheduleService:
             elif c.combined_with:
                 combined_with = [f"C{cid}" for cid in c.combined_with]
 
-            # 处理教师覆盖
+            # 处理教师覆盖 - 优先使用新的 teacher_configs
             teacher_override = {}
-            if c.teacher_override:
+            teacher_dual_configs = {}  # 每个教学班的双教师配置
+            
+            if c.teacher_configs and len(c.teacher_configs) > 0:
+                # 新的多教师配置格式: [{teacher_id, class_count, dual_enabled, second_teacher_id, split_week}]
+                class_num = 1
+                for config in c.teacher_configs:
+                    tid = config.get('teacher_id')
+                    class_count = config.get('class_count', 1)
+                    if tid:
+                        algo_tid = teacher_id_map.get(int(tid))
+                        # 为该教师分配的每个教学班设置教师
+                        for _ in range(int(class_count)):
+                            teacher_override[class_num] = algo_tid
+                            # 如果该教师启用了双教师，记录配置
+                            if config.get('dual_enabled') and config.get('second_teacher_id'):
+                                teacher_dual_configs[class_num] = {
+                                    'second_teacher_id': teacher_id_map.get(int(config['second_teacher_id'])),
+                                    'split_week': config.get('split_week', 8)
+                                }
+                            class_num += 1
+            elif c.teacher_override:
+                # 旧的 teacher_override 格式
                 for class_num, tid in c.teacher_override.items():
                     teacher_override[int(class_num)] = teacher_id_map.get(int(tid))
 
@@ -175,7 +196,12 @@ class ScheduleService:
                     
                     course_by_cohort[algo_cohort].append(algo_course)
                     
-                    if c.teacher_id:
+                    # 设置默认教师：优先使用 teacher_configs 中的第一个教师
+                    if c.teacher_configs and len(c.teacher_configs) > 0:
+                        first_teacher_id = c.teacher_configs[0].get('teacher_id')
+                        if first_teacher_id:
+                            teacher_course_map[course_id] = teacher_id_map.get(int(first_teacher_id))
+                    elif c.teacher_id:
                         teacher_course_map[course_id] = teacher_id_map.get(c.teacher_id)
             else:
                 # 单专业课或无专业课（保持原来的逻辑）
@@ -202,7 +228,12 @@ class ScheduleService:
 
                 course_by_cohort[algo_cohort].append(algo_course)
 
-                if c.teacher_id:
+                # 设置默认教师：优先使用 teacher_configs 中的第一个教师
+                if c.teacher_configs and len(c.teacher_configs) > 0:
+                    first_teacher_id = c.teacher_configs[0].get('teacher_id')
+                    if first_teacher_id:
+                        teacher_course_map[course_id] = teacher_id_map.get(int(first_teacher_id))
+                elif c.teacher_id:
                     teacher_course_map[course_id] = teacher_id_map.get(c.teacher_id)
 
         # 6. 转换固定课程 - 按学期筛选
@@ -257,6 +288,7 @@ class ScheduleService:
 
         # 8. 转换子组预分配
         db_assignments = self.db.query(SubgroupAssignment).all()
+
         subgroup_pre_assignment = defaultdict(dict)
         for a in db_assignments:
             cohort_key = cohorts_map.get(a.cohort_id)
@@ -310,7 +342,7 @@ class ScheduleService:
             # 分离校本部教师课程
             campus_tcs, other_tcs = [], []
             campus_teacher_names = {t.name for t in teachers_list if t.is_campus_teacher}
-
+            
             for tc in all_teaching_classes:
                 if tc.teacher_name in campus_teacher_names:
                     if tc.teacher_name not in tc.course.campus_teachers:
@@ -324,18 +356,48 @@ class ScheduleService:
             campus_fixed_results = []
             campus_scheduler = None
 
-            for i in range(100):
-                # 清理上一次的调度器
-                if campus_scheduler is not None:
-                    campus_scheduler.cleanup()
+            if campus_tcs:  # 只有存在校本部教学班时才排课
+                best_detailed = []
+                best_fixed = []
+                best_failed_count = len(campus_tcs) + 1
+                consecutive_same_failures = 0
+                last_failed_count = -1
+                
+                for i in range(20):  # 最多尝试20次
+                    # 清理上一次的调度器
+                    if campus_scheduler is not None:
+                        campus_scheduler.cleanup()
+                        
+                    campus_scheduler = CampusScheduler(
+                        campus_tcs, all_subgroups, tc_to_sg_map,
+                        teachers_list, rooms_list, fixed_schedule
+                    )
+                    campus_detailed_results, campus_fixed_results, failed_campus_tcs = campus_scheduler.schedule()
+                    current_failed_count = len(failed_campus_tcs)
                     
-                campus_scheduler = CampusScheduler(
-                    campus_tcs, all_subgroups, tc_to_sg_map,
-                    teachers_list, rooms_list, fixed_schedule
-                )
-                campus_detailed_results, campus_fixed_results, failed_campus_tcs = campus_scheduler.schedule()
-                if not failed_campus_tcs:
-                    break
+                    
+                    # 保留最佳结果
+                    if current_failed_count < best_failed_count:
+                        best_detailed = campus_detailed_results
+                        best_fixed = campus_fixed_results
+                        best_failed_count = current_failed_count
+                    
+                    # 完全成功，退出
+                    if not failed_campus_tcs:
+                        break
+                    
+                    # 检查是否连续多次失败数量相同（无效重试）
+                    if current_failed_count == last_failed_count:
+                        consecutive_same_failures += 1
+                        if consecutive_same_failures >= 3:  # 连续3次相同失败数，停止重试
+                            break
+                    else:
+                        consecutive_same_failures = 1
+                    last_failed_count = current_failed_count
+                
+                # 使用最佳结果
+                campus_detailed_results = best_detailed
+                campus_fixed_results = best_fixed
             
             # 清理最后一次的调度器
             if campus_scheduler is not None:
@@ -403,10 +465,14 @@ class ScheduleService:
         """计算虚拟子组到行政班的映射
         
         算法逻辑：
-        1. 获取该专业年级的所有子组，按ID排序确保一致性
-        2. 将子组平均分配到行政班
-        3. 例如：4个子组，4个行政班 -> 每班1个子组
-        4. 例如：8个子组，4个行政班 -> 每班2个子组
+        使用浮点计算将子组平均分配到行政班。
+        每个行政班覆盖一个连续的子组范围，子组可能被多个行政班共享。
+        
+        例如：6个子组，4个行政班 -> 每班1.5个子组
+        - 1班: 覆盖[0, 1.5) -> 子组1, 子组2
+        - 2班: 覆盖[1.5, 3) -> 子组2, 子组3
+        - 3班: 覆盖[3, 4.5) -> 子组4, 子组5
+        - 4班: 覆盖[4.5, 6) -> 子组5, 子组6
         
         Args:
             all_subgroups: 所有虚拟子组 (models.class_group.SubGroup 对象列表)
@@ -443,19 +509,32 @@ class ScheduleService:
         
         subgroup_count = len(cohort_subgroups)
         
-        # 计算每个行政班分配多少子组
+        # 计算每个行政班覆盖的子组范围（使用浮点数）
         subgroups_per_admin = subgroup_count / admin_class_count
         
-        mapping = {}
+        # 先计算每个行政班覆盖哪些子组
+        admin_to_subgroups = {i: [] for i in range(admin_class_count)}
         
-        # 按子组索引分配到行政班
-        for i, sg in enumerate(cohort_subgroups):
-            # 计算该子组属于哪个行政班
-            admin_idx = int(i / subgroups_per_admin)
-            admin_idx = min(admin_idx, admin_class_count - 1)  # 防止越界
+        for admin_idx in range(admin_class_count):
+            # 该行政班覆盖的范围 [start, end)
+            start = admin_idx * subgroups_per_admin
+            end = (admin_idx + 1) * subgroups_per_admin
             
-            # 分配到对应的行政班 (返回DB对象而不是class_index)
-            mapping[sg.id] = [admin_classes[admin_idx]]
+            # 找出落在这个范围内的子组（包括边界子组）
+            for sg_idx in range(subgroup_count):
+                # 子组sg_idx覆盖的范围是 [sg_idx, sg_idx+1)
+                # 如果与行政班范围有交集，则该子组属于该行政班
+                if sg_idx < end and (sg_idx + 1) > start:
+                    admin_to_subgroups[admin_idx].append(sg_idx)
+        
+        # 转换为子组 -> 行政班的映射
+        mapping = {}
+        for sg_idx, sg in enumerate(cohort_subgroups):
+            sg_admins = []
+            for admin_idx in range(admin_class_count):
+                if sg_idx in admin_to_subgroups[admin_idx]:
+                    sg_admins.append(admin_classes[admin_idx])
+            mapping[sg.id] = sg_admins
         
         return mapping
 

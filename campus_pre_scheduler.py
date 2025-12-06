@@ -10,7 +10,8 @@ class CampusScheduler:
 
     def __init__(self, campus_tcs: list, all_subgroups: list, all_tc_to_sg_map: dict, teachers: list, rooms: list,
                  initial_fixed_schedule: list):
-        self.all_tcs_to_schedule = campus_tcs
+        # 复制列表而不是直接引用，避免 cleanup 时清空原始列表
+        self.all_tcs_to_schedule = list(campus_tcs)
         self.all_subgroups = all_subgroups
         self.all_tc_to_sg_map = all_tc_to_sg_map
         self.teachers = teachers
@@ -343,6 +344,15 @@ class CampusScheduler:
                                              placed_task_ids)
 
     def _schedule_48h_dynamic_split(self, tasks, successful_placements, placed_task_ids):
+        """48学时课程动态拆分模式
+        
+        策略顺序：
+        1. 策略3: 动态拆分模式 (单周4学时/双周2学时 或 单周2学时/双周4学时)
+        2. 策略4: 轮替策略 (每3周一个周期，按(1,1,2)/(1,2,1)/(2,1,1)轮替)
+        """
+        # 用于策略4的轮替模式分配
+        sg_pattern_cycle = defaultdict(lambda: cycle([(1, 1, 2), (1, 2, 1), (2, 1, 1)]))
+        
         for task in tasks:
             if task['id'] in placed_task_ids:
                 continue
@@ -354,6 +364,7 @@ class CampusScheduler:
             if not single_week_filtered and not double_week_filtered:
                 continue
 
+            # 策略3: 动态拆分模式
             single_week_density = self._calculate_schedule_density(task, single_week_filtered)
             double_week_density = self._calculate_schedule_density(task, double_week_filtered)
 
@@ -365,6 +376,7 @@ class CampusScheduler:
             else:
                 random.shuffle(patterns_to_try)
 
+            placed = False
             for pattern in patterns_to_try:
                 placements = self._try_place_48h_interleaved_randomized(task, pattern, phase_week_set)
                 if placements:
@@ -372,7 +384,57 @@ class CampusScheduler:
                         self._commit_placement(p)
                         successful_placements.append(p)
                     placed_task_ids.add(task['id'])
+                    placed = True
                     break
+            
+            if placed:
+                continue
+                
+            # 策略4: 轮替策略 - 当策略3失败时尝试
+            # 根据子组获取轮替模式
+            sg_id = frozenset(sg.id for sg in task['tc'].subgroups) if task['tc'].subgroups else frozenset()
+            session_count_pattern = next(sg_pattern_cycle[sg_id])
+            
+            placements = self._try_place_48h_interleaved_strategy4(task, session_count_pattern)
+            if placements:
+                for p in placements:
+                    self._commit_placement(p)
+                    successful_placements.append(p)
+                placed_task_ids.add(task['id'])
+    
+    def _try_place_48h_interleaved_strategy4(self, task, session_count_pattern):
+        """策略4: 轮替策略实现
+        
+        规则:
+        - 第1-15周内采用轮替策略，每隔3周上2次连上2节的课
+        - 第17周上2次课，连上3节
+        - 其他周(含第16周)每周上1次连上2节的课
+        
+        session_count_pattern: (1,1,2) / (1,2,1) / (2,1,1)
+        - (1,1,2) 表示第1周和第2周每周上1次，第3周上2次
+        - (1,2,1) 表示第1周和第3周每周上1次，第2周上2次
+        - (2,1,1) 表示第1周上2次，第2周和第3周每周上1次
+        """
+        slots = self._get_valid_slots(duration=2, teacher_name=task['tc'].teacher_name)
+        random.shuffle(slots)
+        
+        # 需要找到2个时间槽用于常规排课
+        for s1, s2 in combinations(slots, 2):
+            temp_grids = (
+                self.teacher_grid.copy(), 
+                self.subgroup_grid.copy(), 
+                self.lab_usage_grid.copy(),
+                self.room_grid.copy()
+            )
+            
+            success, new_placements = self._check_interleaved_pattern_fit(
+                task, session_count_pattern, s1, s2, temp_grids
+            )
+            
+            if success:
+                return new_placements
+        
+        return []
 
     def _try_place_48h_interleaved_randomized(self, task, pattern, phase_week_set):
         sessions_single, sessions_double = pattern
