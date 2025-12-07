@@ -270,7 +270,9 @@
                     <div v-if="currentView === 'dashboard'" class="slide-in space-y-8">
                         <!-- 统计卡片 -->
                         <div class="grid grid-cols-4 gap-6">
-                            <div v-for="stat in stats" :key="stat.label" class="glass rounded-2xl p-6 hover-lift">
+                            <div v-for="stat in stats" :key="stat.label" 
+                                @click="navigateToStat(stat.label)"
+                                class="glass rounded-2xl p-6 hover-lift cursor-pointer transition-all duration-300 hover:scale-105">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <p class="text-3xl font-bold" :class="stat.color">{{ stat.value }}</p>
@@ -313,13 +315,25 @@
                                         <p class="text-sm text-gray-500">浏览排课结果</p>
                                     </div>
                                 </button>
-                                <button @click="exportExcel" :disabled="!latestSession" class="p-6 rounded-xl glass hover:bg-white/10 transition-colors flex items-center space-x-4 disabled:opacity-50">
-                                    <i class="fas fa-file-excel text-2xl text-green-400"></i>
-                                    <div class="text-left">
-                                        <p class="font-medium">导出Excel</p>
-                                        <p class="text-sm text-gray-500">下载课表文件</p>
+                                <div class="p-6 rounded-xl glass">
+                                    <div class="flex items-center space-x-4 mb-4">
+                                        <i class="fas fa-file-excel text-2xl text-green-400"></i>
+                                        <div class="text-left">
+                                            <p class="font-medium">导出Excel</p>
+                                            <p class="text-sm text-gray-500">下载课表文件</p>
+                                        </div>
                                     </div>
-                                </button>
+                                    <div class="flex space-x-2">
+                                        <button @click="exportExcel('first')" 
+                                            class="flex-1 py-2 px-3 rounded-lg bg-green-500/20 hover:bg-green-500/30 text-green-400 transition-colors text-sm font-medium">
+                                            <i class="fas fa-book mr-1"></i> 上册
+                                        </button>
+                                        <button @click="exportExcel('second')" 
+                                            class="flex-1 py-2 px-3 rounded-lg bg-green-500/20 hover:bg-green-500/30 text-green-400 transition-colors text-sm font-medium">
+                                            <i class="fas fa-book-open mr-1"></i> 下册
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -630,9 +644,13 @@
                                     <i :class="scheduling ? 'fas fa-spinner fa-spin' : 'fas fa-magic'"></i>
                                     <span>{{ scheduling ? '排课中...' : '排课(下册)' }}</span>
                                 </button>
-                                <button @click="exportExcel" :disabled="!latestSession" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors flex items-center space-x-2 disabled:opacity-50">
+                                <button @click="exportExcel('first')" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors flex items-center space-x-2">
                                     <i class="fas fa-download"></i>
-                                    <span>导出Excel</span>
+                                    <span>导出上册</span>
+                                </button>
+                                <button @click="exportExcel('second')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center space-x-2">
+                                    <i class="fas fa-download"></i>
+                                    <span>导出下册</span>
                                 </button>
                             </div>
                         </div>
@@ -655,6 +673,11 @@
                                     }"></span>
                                     <span class="text-sm text-gray-400">当前课表: {{ selectedSemester === 'first' ? '上册' : '下册' }}</span>
                                     <span class="text-xs" :class="latestSession.status === 'failed' ? 'text-red-400' : 'text-gray-500'">{{ latestSession.message }}</span>
+                                    <button v-if="latestSession.status === 'completed_with_warnings' && latestSession.penalty_details" 
+                                        @click="showPenaltyDetails = true"
+                                        class="ml-2 px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30 transition-colors">
+                                        <i class="fas fa-info-circle mr-1"></i>查看详情
+                                    </button>
                                 </template>
                                 <!-- 无排课记录 -->
                                 <template v-else>
@@ -782,7 +805,7 @@
                 </form>
 
                 <!-- 教师表单 -->
-                <form v-if="modalType === 'teacher'" @submit.prevent="saveTeacher" class="space-y-4">
+                <form v-if="modalType === 'teacher'" @submit.prevent="saveTeacher" class="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
                     <div>
                         <label class="block text-sm text-gray-400 mb-2">教师姓名</label>
                         <input v-model="form.name" type="text" required class="w-full px-4 py-3 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
@@ -791,6 +814,54 @@
                         <input v-model="form.is_campus_teacher" type="checkbox" id="isCampus" class="w-5 h-5 rounded bg-dark-700 border-gray-700 text-accent-500 focus:ring-accent-500">
                         <label for="isCampus" class="text-sm">校本部教师</label>
                     </div>
+                    
+                    <!-- 时间偏好设置（仅编辑时显示） -->
+                    <div v-if="form.id" class="pt-4 border-t border-gray-700">
+                        <div class="flex items-center justify-between mb-3">
+                            <label class="text-sm text-gray-400">
+                                <i class="fas fa-clock mr-1"></i>时间偏好设置
+                            </label>
+                            <div class="flex items-center space-x-2 text-xs">
+                                <span class="flex items-center"><span class="w-3 h-3 rounded bg-green-500/50 mr-1"></span>偏好</span>
+                                <span class="flex items-center"><span class="w-3 h-3 rounded bg-red-500/50 mr-1"></span>不希望</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500 mb-3">点击单元格切换：空白 → 偏好(绿) → 不希望(红) → 空白</p>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-xs border-collapse">
+                                <thead>
+                                    <tr>
+                                        <th class="p-1 border border-gray-700 bg-dark-800 w-12">节次</th>
+                                        <th v-for="d in 5" :key="d" class="p-1 border border-gray-700 bg-dark-800 w-14">周{{ ['一','二','三','四','五'][d-1] }}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="p in 11" :key="p">
+                                        <td class="p-1 border border-gray-700 bg-dark-800 text-center">{{ p }}</td>
+                                        <td v-for="d in 5" :key="d" 
+                                            @click="togglePreferenceSlot(d, p)"
+                                            class="p-1 border border-gray-700 text-center cursor-pointer transition-colors hover:opacity-80"
+                                            :class="getPreferenceSlotClass(d, p)">
+                                            <span v-if="isPreferredSlot(d, p)" class="text-green-400">✓</span>
+                                            <span v-else-if="isUndesiredSlot(d, p)" class="text-red-400">✗</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="flex space-x-2 mt-3">
+                            <button type="button" @click="clearAllPreferences" class="flex-1 py-2 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
+                                <i class="fas fa-eraser mr-1"></i>清空全部
+                            </button>
+                            <button type="button" @click="setAllDayPreference('preferred')" class="flex-1 py-2 text-xs bg-green-700/50 hover:bg-green-600/50 rounded-lg transition-colors">
+                                <i class="fas fa-check mr-1"></i>全天偏好
+                            </button>
+                            <button type="button" @click="setAllDayPreference('undesired')" class="flex-1 py-2 text-xs bg-red-700/50 hover:bg-red-600/50 rounded-lg transition-colors">
+                                <i class="fas fa-times mr-1"></i>全天不希望
+                            </button>
+                        </div>
+                    </div>
+                    
                     <button type="submit" class="w-full py-3 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors font-medium">保存</button>
                 </form>
 
@@ -1078,6 +1149,168 @@
             </div>
         </div>
 
+        <!-- 惩罚详情弹窗 -->
+        <div v-if="showPenaltyDetails && latestSession?.penalty_details" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 fade-in" @click.self="showPenaltyDetails = false">
+            <div class="glass-strong rounded-2xl p-8 w-full max-w-2xl slide-in max-h-[80vh] overflow-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-semibold">
+                        <i class="fas fa-exclamation-triangle text-yellow-400 mr-2"></i>
+                        排课冲突详情
+                    </h3>
+                    <button @click="showPenaltyDetails = false" class="w-8 h-8 rounded-lg hover:bg-white/10 transition-colors flex items-center justify-center">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                
+                <!-- 汇总信息 -->
+                <div class="glass rounded-xl p-4 mb-6">
+                    <h4 class="text-sm font-medium text-gray-300 mb-3">惩罚分数汇总</h4>
+                    <div class="grid grid-cols-3 gap-3 mb-4">
+                        <div class="text-center p-3 rounded-lg bg-white/5">
+                            <div class="text-yellow-400 text-xl font-bold">{{ latestSession.penalty_details.summary?.total_penalty?.toFixed(0) || 0 }}</div>
+                            <div class="text-xs text-gray-400">总惩罚分</div>
+                        </div>
+                        <div class="text-center p-3 rounded-lg bg-white/5">
+                            <div class="text-red-400 text-xl font-bold">{{ latestSession.penalty_details.summary?.hard_constraint_penalty?.toFixed(0) || 0 }}</div>
+                            <div class="text-xs text-gray-400">硬约束</div>
+                        </div>
+                        <div class="text-center p-3 rounded-lg bg-white/5">
+                            <div class="text-orange-400 text-xl font-bold">{{ latestSession.penalty_details.summary?.soft_constraint_penalty?.toFixed(0) || 0 }}</div>
+                            <div class="text-xs text-gray-400">软约束</div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2 text-sm">
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">教师冲突:</span>
+                            <span :class="latestSession.penalty_details.summary?.teacher_conflict_count > 0 ? 'text-red-400' : 'text-green-400'">
+                                {{ latestSession.penalty_details.summary?.teacher_conflict_count || 0 }}次
+                            </span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">学生冲突:</span>
+                            <span :class="latestSession.penalty_details.summary?.subgroup_conflict_count > 0 ? 'text-red-400' : 'text-green-400'">
+                                {{ latestSession.penalty_details.summary?.subgroup_conflict_count || 0 }}次
+                            </span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">机房冲突:</span>
+                            <span :class="latestSession.penalty_details.summary?.room_conflict_count > 0 ? 'text-red-400' : 'text-green-400'">
+                                {{ latestSession.penalty_details.summary?.room_conflict_count || 0 }}次
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 教师冲突详情 -->
+                <div v-if="latestSession.penalty_details.teacher_conflicts?.length > 0" class="mb-4">
+                    <h4 class="text-sm font-medium text-red-400 mb-2">
+                        <i class="fas fa-user-tie mr-1"></i>教师时间冲突
+                    </h4>
+                    <div class="space-y-2">
+                        <div v-for="(conflict, idx) in latestSession.penalty_details.teacher_conflicts" :key="'t'+idx" 
+                            class="glass rounded-lg p-3 text-sm">
+                            <span class="text-white font-medium">{{ conflict.teacher }}</span>
+                            <span class="text-gray-400"> 在第{{ conflict.week }}周 周{{ ['','一','二','三','四','五'][conflict.day] }} 第{{ conflict.period }}节 </span>
+                            <span class="text-red-400">同时有{{ conflict.conflict_count }}门课</span>
+                            <span class="text-xs text-gray-500 ml-2">(惩罚: {{ conflict.penalty }}分)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 学生冲突详情 -->
+                <div v-if="latestSession.penalty_details.subgroup_conflicts?.length > 0" class="mb-4">
+                    <h4 class="text-sm font-medium text-red-400 mb-2">
+                        <i class="fas fa-users mr-1"></i>学生时间冲突
+                    </h4>
+                    <div class="space-y-2">
+                        <div v-for="(conflict, idx) in latestSession.penalty_details.subgroup_conflicts" :key="'s'+idx" 
+                            class="glass rounded-lg p-3 text-sm">
+                            <span class="text-white font-medium">{{ conflict.subgroup }}</span>
+                            <span class="text-gray-400"> 在第{{ conflict.week }}周 周{{ ['','一','二','三','四','五'][conflict.day] }} 第{{ conflict.period }}节 </span>
+                            <span class="text-red-400">同时有{{ conflict.conflict_count }}门课</span>
+                            <span class="text-xs text-gray-500 ml-2">(惩罚: {{ conflict.penalty }}分)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 机房冲突详情 -->
+                <div v-if="latestSession.penalty_details.room_conflicts?.length > 0" class="mb-4">
+                    <h4 class="text-sm font-medium text-red-400 mb-2">
+                        <i class="fas fa-desktop mr-1"></i>机房时间冲突
+                    </h4>
+                    <div class="space-y-2">
+                        <div v-for="(conflict, idx) in latestSession.penalty_details.room_conflicts" :key="'r'+idx" 
+                            class="glass rounded-lg p-3 text-sm">
+                            <span class="text-white font-medium">{{ conflict.room }}</span>
+                            <span class="text-gray-400"> 在第{{ conflict.week }}周 周{{ ['','一','二','三','四','五'][conflict.day] }} 第{{ conflict.period }}节 </span>
+                            <span class="text-red-400">同时有{{ conflict.conflict_count }}节课</span>
+                            <span class="text-xs text-gray-500 ml-2">(惩罚: {{ conflict.penalty }}分)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 软约束详情 -->
+                <div v-if="latestSession.penalty_details.soft_constraints" class="mb-4">
+                    <h4 class="text-sm font-medium text-orange-400 mb-2">
+                        <i class="fas fa-sliders-h mr-1"></i>软约束惩罚
+                        <span class="text-xs ml-2" style="color: var(--text-muted)">(总计: {{ latestSession.penalty_details.summary?.soft_constraint_penalty?.toFixed(2) || 0 }}分)</span>
+                    </h4>
+                    <div class="space-y-2">
+                        <div v-for="(constraint, key) in latestSession.penalty_details.soft_constraints" :key="key"
+                            class="glass rounded-lg overflow-hidden">
+                            <!-- 约束概要（可点击展开） -->
+                            <div class="p-3 text-sm flex justify-between items-center cursor-pointer transition-colors"
+                                style="color: var(--text-primary)"
+                                :style="{'background': 'var(--glass-bg)'}"
+                                @mouseenter="$event.target.style.background = 'var(--glass-strong-bg)'"
+                                @mouseleave="$event.target.style.background = 'var(--glass-bg)'"
+                                @click="constraint.items?.length > 0 && (expandedConstraint === key ? expandedConstraint = null : expandedConstraint = key)">
+                                <div class="flex items-center">
+                                    <i v-if="constraint.items?.length > 0" 
+                                        :class="['fas fa-chevron-right mr-2 text-xs transition-transform', expandedConstraint === key ? 'rotate-90' : '']"
+                                        style="color: var(--text-muted)"></i>
+                                    <span class="font-medium" style="color: var(--text-primary)">{{ constraint.desc }}</span>
+                                    <span class="text-xs ml-2" style="color: var(--text-muted)">(权重: {{ constraint.weight }})</span>
+                                </div>
+                                <div class="text-right">
+                                    <span :class="constraint.count > 0 ? 'text-orange-400' : 'text-green-400'">
+                                        {{ constraint.count }} 次
+                                    </span>
+                                    <span class="text-xs ml-2" style="color: var(--text-muted)">({{ constraint.penalty }}分)</span>
+                                </div>
+                            </div>
+                            <!-- 展开的详情列表 -->
+                            <div v-if="expandedConstraint === key && constraint.items?.length > 0" 
+                                class="max-h-64 overflow-y-auto"
+                                style="border-top: 1px solid var(--border-color); background: var(--bg-secondary)">
+                                <div v-for="(item, idx) in constraint.items" :key="idx" 
+                                    class="px-4 py-2 text-xs transition-colors"
+                                    style="border-bottom: 1px solid var(--border-color); color: var(--text-secondary)"
+                                    :style="{'background': 'transparent'}"
+                                    @mouseenter="$event.target.style.background = 'var(--glass-bg)'"
+                                    @mouseleave="$event.target.style.background = 'transparent'">
+                                    {{ item.desc }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 无硬冲突提示 -->
+                <div v-if="!latestSession.penalty_details.teacher_conflicts?.length && !latestSession.penalty_details.subgroup_conflicts?.length && !latestSession.penalty_details.room_conflicts?.length" 
+                    class="text-center py-4">
+                    <i class="fas fa-check-circle text-2xl text-green-400 mb-2"></i>
+                    <p class="text-gray-400 text-sm">无硬性冲突</p>
+                </div>
+                
+                <div class="mt-6 text-center">
+                    <button @click="showPenaltyDetails = false" class="px-6 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg transition-colors">
+                        关闭
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast 通知 -->
         <div v-if="toast.show" class="fixed bottom-8 right-8 z-50 slide-in">
             <div :class="['px-6 py-4 rounded-xl shadow-lg flex items-center space-x-3', 
@@ -1115,6 +1348,8 @@
                 const selectedWeek = ref(1);
                 const selectedSemester = ref('first');
                 const sidebarExpanded = ref(false);
+                const showPenaltyDetails = ref(false);
+                const expandedConstraint = ref(null);  // 当前展开的软约束详情
                 
                 // 主题 - 初始化
                 const savedTheme = localStorage.getItem('theme');
@@ -1171,6 +1406,19 @@
                     customColor.value = e.target.value;
                     localStorage.setItem('customColor', customColor.value);
                     setTheme('custom');
+                };
+                
+                // 统计卡片导航
+                const navigateToStat = (label) => {
+                    const statViewMap = {
+                        '专业年级': () => { currentView.value = 'classes'; classTab.value = 'cohorts'; },
+                        '教师数量': () => { currentView.value = 'teachers'; },
+                        '课程数量': () => { currentView.value = 'courses'; },
+                        '机房数量': () => { currentView.value = 'rooms'; }
+                    };
+                    if (statViewMap[label]) {
+                        statViewMap[label]();
+                    }
                 };
                 
                 // 自定义主题样式 (Vue绑定用)
@@ -1468,7 +1716,11 @@
                 // 按教学班分组课表：同一门课的不同教学班分开显示
                 // 解决问题：当一个行政班涉及多个教学班（如线性代数2班同时属于教学班1和教学班2）
                 // 需要分成多张课表显示，让用户知道这个班的学生被分成了不同的组
-                // 支持多门课程的笛卡尔积：如果课程A有2个教学班，课程B有2个教学班，则需要2×2=4张课表
+                // 
+                // 优化策略：按子组集合分组，而非笛卡尔积
+                // 例如：C++有教学班1(子组1234)和教学班2(子组56)，数据库也有教学班1(子组1234)和教学班2(子组56)
+                // 则只需要2张课表：课表A(子组1234的课) 和 课表B(子组56的课)
+                // 而不是笛卡尔积的4张课表
                 const groupedSchedules = computed(() => {
                     if (!selectedAdminClass.value || scheduleResults.value.length === 0) {
                         return [];
@@ -1487,11 +1739,8 @@
                     }
                     
                     // 第二步：找出当前行政班实际涉及的多教学班课程
-                    // 注意：只有当该行政班实际涉及某门课的多个教学班时，才需要分表
-                    // multiTcCourses: [{courseName, tcIds: [...]}, ...]
                     const multiTcCourses = [];
                     for (const [courseName, tcIdSet] of courseNameToTcIds.entries()) {
-                        // 只有当该行政班涉及这门课的多个教学班时才需要分表
                         if (tcIdSet.size > 1) {
                             multiTcCourses.push({
                                 courseName,
@@ -1577,52 +1826,187 @@
                         return scheduleGroups.map(group => [...nonConflictCourses, ...group]);
                     }
                     
-                    // 第三步：生成笛卡尔积组合
-                    // 如果课程A有2个教学班[A1,A2]，课程B有3个教学班[B1,B2,B3]
-                    // 则需要生成2×3=6个组合：(A1,B1), (A1,B2), (A1,B3), (A2,B1), (A2,B2), (A2,B3)
-                    // 每个组合对应一张课表
+                    // 第三步：按子组集合分组（而非笛卡尔积）
+                    // 核心思想：子组相同的教学班放在同一张课表
+                    // 例如：C++教学班1(子组1234) 和 数据库教学班1(子组1234) 放在课表A
+                    //       C++教学班2(子组56) 和 数据库教学班2(子组56) 放在课表B
                     
-                    // 生成所有组合
-                    let combinations = [[]];
-                    for (const { courseName, tcIds } of multiTcCourses) {
-                        const newCombinations = [];
-                        for (const combo of combinations) {
-                            for (const tcId of tcIds) {
-                                newCombinations.push([...combo, { courseName, tcId }]);
-                            }
+                    // 收集所有多教学班课程的记录，按teaching_class_id分组
+                    // tcIdToSubgroups: teaching_class_id -> subgroup_ids的排序字符串
+                    const tcIdToSubgroups = new Map();
+                    for (const course of scheduleResults.value) {
+                        const tcId = course.teaching_class_id;
+                        if (!tcIdToSubgroups.has(tcId) && course.subgroup_ids && course.subgroup_ids.length > 0) {
+                            // 将subgroup_ids排序后作为key，确保相同子组集合的课程归到一组
+                            const subgroupKey = [...course.subgroup_ids].sort().join(',');
+                            tcIdToSubgroups.set(tcId, subgroupKey);
                         }
-                        combinations = newCombinations;
                     }
                     
-                    // 第四步：为每个组合生成课表
-                    // 单教学班课程放到所有课表，多教学班课程按组合匹配
+                    // 找出所有不同的子组集合（每个集合对应一张课表）
+                    const subgroupSetsSet = new Set();
+                    for (const { tcIds } of multiTcCourses) {
+                        for (const tcId of tcIds) {
+                            const subgroupKey = tcIdToSubgroups.get(tcId);
+                            if (subgroupKey) {
+                                subgroupSetsSet.add(subgroupKey);
+                            }
+                        }
+                    }
+                    // 转为数组并排序，保证与Excel导出顺序一致
+                    const subgroupSetsList = [...subgroupSetsSet].sort();
+                    
+                    // 如果没有有效的子组集合，回退到单课表
+                    if (subgroupSetsList.length === 0) {
+                        return [scheduleResults.value];
+                    }
+                    
+                    // 单教学班课程（放到所有课表）
                     const singleTcCourses = scheduleResults.value.filter(c => {
                         const tcIdSet = courseNameToTcIds.get(c.course_name);
                         return !tcIdSet || tcIdSet.size <= 1;
                     });
                     
-                    const scheduleGroups = combinations.map(combo => {
-                        // combo: [{courseName, tcId}, ...]
-                        const comboMap = new Map(combo.map(item => [item.courseName, item.tcId]));
-                        
-                        // 筛选多教学班课程：只保留匹配当前组合的教学班
-                        const matchedMultiTcCourses = scheduleResults.value.filter(c => {
+                    // 为每个子组集合生成一张课表
+                    const scheduleGroups = [];
+                    for (const subgroupKey of subgroupSetsList) {
+                        // 找出属于这个子组集合的多教学班课程
+                        const matchedCourses = scheduleResults.value.filter(c => {
                             const tcIdSet = courseNameToTcIds.get(c.course_name);
                             if (!tcIdSet || tcIdSet.size <= 1) return false;
-                            // 检查该课程的教学班ID是否匹配当前组合
-                            const expectedTcId = comboMap.get(c.course_name);
-                            return c.teaching_class_id === expectedTcId;
+                            // 检查该课程的子组是否匹配当前子组集合
+                            const courseSubgroupKey = tcIdToSubgroups.get(c.teaching_class_id);
+                            return courseSubgroupKey === subgroupKey;
                         });
                         
-                        return [...singleTcCourses, ...matchedMultiTcCourses];
-                    });
+                        if (matchedCourses.length > 0) {
+                            scheduleGroups.push([...singleTcCourses, ...matchedCourses]);
+                        }
+                    }
+                    
+                    // 第四步：按子组子集关系 + 时间不冲突合并课表组
+                    // 合并条件：一个子组集合是另一个的子集，且合并后时间不冲突
+                    // 例如：{1,2,3} ⊂ {1,2,3,4}，且时间不冲突，应该合并
+                    
+                    // 将subgroupKey转换为数字集合
+                    const parseSubgroupKey = (key) => new Set(key.split(',').map(Number));
+                    
+                    // 检查set1是否是set2的子集（或相等）
+                    const isSubset = (set1, set2) => {
+                        for (const s of set1) {
+                            if (!set2.has(s)) return false;
+                        }
+                        return true;
+                    };
+                    
+                    // 检查两个子组集合是否有子集关系（一个包含另一个）
+                    const hasSubsetRelation = (set1, set2) => {
+                        return isSubset(set1, set2) || isSubset(set2, set1);
+                    };
+                    
+                    // 检查两个课程列表是否有时间冲突
+                    const coursesHaveConflict = (courses1, courses2) => {
+                        for (const c1 of courses1) {
+                            const dur1 = c1.duration || 1;
+                            const slots1 = new Set();
+                            for (let p = c1.period; p < c1.period + dur1; p++) {
+                                slots1.add(`${c1.day}-${p}`);
+                            }
+                            const weeks1 = new Set(c1.weeks || [c1.week]);
+                            
+                            for (const c2 of courses2) {
+                                // 跳过相同课程（同一课程不同教学班不算冲突）
+                                if (c1.course_name === c2.course_name) continue;
+                                
+                                const dur2 = c2.duration || 1;
+                                const slots2 = new Set();
+                                for (let p = c2.period; p < c2.period + dur2; p++) {
+                                    slots2.add(`${c2.day}-${p}`);
+                                }
+                                const weeks2 = new Set(c2.weeks || [c2.week]);
+                                
+                                // 检查时间槽是否重叠
+                                let slotsOverlap = false;
+                                for (const s of slots1) {
+                                    if (slots2.has(s)) { slotsOverlap = true; break; }
+                                }
+                                if (!slotsOverlap) continue;
+                                
+                                // 检查周次是否重叠
+                                let weeksOverlap = false;
+                                for (const w of weeks1) {
+                                    if (weeks2.has(w)) { weeksOverlap = true; break; }
+                                }
+                                if (weeksOverlap) return true;
+                            }
+                        }
+                        return false;
+                    };
+                    
+                    const parsedSets = subgroupSetsList.map(parseSubgroupKey);
+                    
+                    // 为每个子组集合获取对应的多教学班课程
+                    const subgroupKeyToCourses = new Map();
+                    for (let i = 0; i < subgroupSetsList.length; i++) {
+                        const key = subgroupSetsList[i];
+                        const courses = scheduleGroups[i].filter(c => {
+                            const tcIdSet = courseNameToTcIds.get(c.course_name);
+                            return tcIdSet && tcIdSet.size > 1;
+                        });
+                        subgroupKeyToCourses.set(key, courses);
+                    }
+                    
+                    // 贪心合并：每个已合并组记录子组集合和课程
+                    // mergedGroupData: [{subgroupKeys: Set, subgroupSets: [Set], courses: [...]}]
+                    const mergedGroupData = [];
+                    const used = new Array(subgroupSetsList.length).fill(false);
+                    
+                    for (let i = 0; i < subgroupSetsList.length; i++) {
+                        if (used[i]) continue;
+                        used[i] = true;
+                        
+                        const currentKeys = new Set([subgroupSetsList[i]]);
+                        const currentSets = [parsedSets[i]];
+                        const currentCourses = [...subgroupKeyToCourses.get(subgroupSetsList[i])];
+                        
+                        // 尝试将其他组合并进来
+                        for (let j = i + 1; j < subgroupSetsList.length; j++) {
+                            if (used[j]) continue;
+                            
+                            // 条件1：检查是否与当前组中的某个子组集合有子集关系
+                            let hasRelation = false;
+                            for (const existingSet of currentSets) {
+                                if (hasSubsetRelation(parsedSets[j], existingSet)) {
+                                    hasRelation = true;
+                                    break;
+                                }
+                            }
+                            if (!hasRelation) continue;
+                            
+                            // 条件2：检查合并后是否会产生时间冲突
+                            const newCourses = subgroupKeyToCourses.get(subgroupSetsList[j]);
+                            if (coursesHaveConflict(currentCourses, newCourses)) continue;
+                            
+                            // 可以合并
+                            used[j] = true;
+                            currentKeys.add(subgroupSetsList[j]);
+                            currentSets.push(parsedSets[j]);
+                            currentCourses.push(...newCourses);
+                        }
+                        
+                        mergedGroupData.push({ keys: currentKeys, courses: currentCourses });
+                    }
+                    
+                    // 生成最终课表组
+                    const mergedGroups = mergedGroupData.map(({ courses }) => 
+                        [...singleTcCourses, ...courses]
+                    );
                     
                     // 过滤空组和重复组
                     const uniqueGroups = [];
                     const seenKeys = new Set();
-                    for (const group of scheduleGroups) {
+                    for (const group of mergedGroups) {
                         if (group.length === 0) continue;
-                        // 生成组的唯一标识（按课程ID排序后拼接）
                         const key = group.map(c => c.id).sort().join(',');
                         if (!seenKeys.has(key)) {
                             seenKeys.add(key);
@@ -1630,7 +2014,7 @@
                         }
                     }
                     
-                    return uniqueGroups;
+                    return uniqueGroups.length > 0 ? uniqueGroups : [scheduleResults.value];
                 });
 
                 // 计算属性: 多专业教学班总数
@@ -1799,16 +2183,103 @@
                 const saveTeacher = async () => {
                     const method = form.value.id ? 'PUT' : 'POST';
                     const url = form.value.id ? `/teachers/${form.value.id}` : '/teachers';
-                    await api(url, { method, body: JSON.stringify(form.value) });
+                    await api(url, { method, body: JSON.stringify({ name: form.value.name, is_campus_teacher: form.value.is_campus_teacher }) });
+                    
+                    // 如果是编辑模式，保存偏好设置
+                    if (form.value.id) {
+                        // 先删除旧的偏好设置
+                        const oldPrefs = await api(`/teachers/${form.value.id}/preferences`);
+                        for (const pref of oldPrefs) {
+                            await api(`/teachers/${form.value.id}/preferences/${pref.id}`, { method: 'DELETE' });
+                        }
+                        // 创建新的偏好设置（如果有）
+                        if ((form.value.preferred_slots && form.value.preferred_slots.length > 0) || 
+                            (form.value.undesired_slots && form.value.undesired_slots.length > 0)) {
+                            await api(`/teachers/${form.value.id}/preferences`, {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                    preferred_slots: form.value.preferred_slots || [],
+                                    undesired_slots: form.value.undesired_slots || []
+                                })
+                            });
+                        }
+                    }
+                    
                     showToast(form.value.id ? '教师更新成功' : '教师添加成功');
                     closeModal();
                     loadTeachers();
                 };
 
-                const editTeacher = (teacher) => {
-                    form.value = { ...teacher };
+                const editTeacher = async (teacher) => {
+                    form.value = { ...teacher, preferred_slots: [], undesired_slots: [] };
+                    // 加载教师偏好设置
+                    try {
+                        const prefs = await api(`/teachers/${teacher.id}/preferences`);
+                        if (prefs && prefs.length > 0) {
+                            // 取第一个偏好设置（通常只有一个全局偏好）
+                            form.value.preferred_slots = prefs[0].preferred_slots || [];
+                            form.value.undesired_slots = prefs[0].undesired_slots || [];
+                        }
+                    } catch (e) {
+                        console.error('加载教师偏好失败:', e);
+                    }
                     modalType.value = 'teacher';
                     showModal.value = true;
+                };
+                
+                // 教师偏好辅助方法
+                const isPreferredSlot = (day, period) => {
+                    return form.value.preferred_slots?.some(s => s[0] === day && s[1] === period);
+                };
+                
+                const isUndesiredSlot = (day, period) => {
+                    return form.value.undesired_slots?.some(s => s[0] === day && s[1] === period);
+                };
+                
+                const getPreferenceSlotClass = (day, period) => {
+                    if (isPreferredSlot(day, period)) return 'bg-green-500/30';
+                    if (isUndesiredSlot(day, period)) return 'bg-red-500/30';
+                    return 'bg-dark-700';
+                };
+                
+                const togglePreferenceSlot = (day, period) => {
+                    if (!form.value.preferred_slots) form.value.preferred_slots = [];
+                    if (!form.value.undesired_slots) form.value.undesired_slots = [];
+                    
+                    const prefIdx = form.value.preferred_slots.findIndex(s => s[0] === day && s[1] === period);
+                    const undesIdx = form.value.undesired_slots.findIndex(s => s[0] === day && s[1] === period);
+                    
+                    if (prefIdx >= 0) {
+                        // 偏好 -> 不希望
+                        form.value.preferred_slots.splice(prefIdx, 1);
+                        form.value.undesired_slots.push([day, period]);
+                    } else if (undesIdx >= 0) {
+                        // 不希望 -> 空白
+                        form.value.undesired_slots.splice(undesIdx, 1);
+                    } else {
+                        // 空白 -> 偏好
+                        form.value.preferred_slots.push([day, period]);
+                    }
+                };
+                
+                const clearAllPreferences = () => {
+                    form.value.preferred_slots = [];
+                    form.value.undesired_slots = [];
+                };
+                
+                const setAllDayPreference = (type) => {
+                    // 设置所有时间段为偏好或不希望
+                    form.value.preferred_slots = [];
+                    form.value.undesired_slots = [];
+                    for (let d = 1; d <= 5; d++) {
+                        for (let p = 1; p <= 11; p++) {
+                            if (type === 'preferred') {
+                                form.value.preferred_slots.push([d, p]);
+                            } else {
+                                form.value.undesired_slots.push([d, p]);
+                            }
+                        }
+                    }
                 };
 
                 const deleteTeacher = async (id) => {
@@ -2006,9 +2477,19 @@
                     return statusMap[status] || status;
                 };
 
-                const exportExcel = () => {
-                    if (!latestSession.value) return;
-                    window.open(`${API_BASE}/schedule/export/${latestSession.value.session_id}`);
+                const exportExcel = async (semester = 'first') => {
+                    try {
+                        // 获取对应学期的最新session
+                        const session = await api(`/schedule/sessions/latest?semester=${semester}`);
+                        if (!session || !session.session_id) {
+                            const semesterName = semester === 'first' ? '上册' : '下册';
+                            showToast(`${semesterName}暂无排课记录`, 'warning');
+                            return;
+                        }
+                        window.open(`${API_BASE}/schedule/export/${session.session_id}`);
+                    } catch (e) {
+                        showToast('导出失败: ' + e.message, 'error');
+                    }
                 };
 
                 // 监听
@@ -2032,15 +2513,17 @@
                 return {
                     currentView, loading, scheduling, schedulingSemester, showModal, modalType, classTab,
                     searchTeacher, filterCohortId, filterSemester, filterCourseCategory, selectedCohortForSchedule, selectedAdminClass, selectedWeek, selectedSemester, sidebarExpanded,
+                    showPenaltyDetails, expandedConstraint,
                     currentTheme, setTheme, customColor, customThemeStyle, onCustomColorChange,
                     cohorts, adminClasses, teachers, rooms, courses, fixedCourses, unifiedCourses, scheduleResults, latestSession,
                     form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle, gradeYears, groupedSchedules,
                     cohortTeachingClassTotal, updateCohortTeachingClassCount, effectiveTeachingClassCount, teacherConfigTotal, canUseMultiTeacher,
                     addTeacherConfig, removeTeacherConfig,
-                    refreshData, openModal, closeModal, showToast, formatDate, getStatusText,
+                    refreshData, openModal, closeModal, showToast, formatDate, getStatusText, navigateToStat,
                     getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTeachers, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt, getCoursesAtForGroup,
                     saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
-                    saveTeacher, editTeacher, deleteTeacher, saveRoom, editRoom, deleteRoom,
+                    saveTeacher, editTeacher, deleteTeacher, isPreferredSlot, isUndesiredSlot, getPreferenceSlotClass, togglePreferenceSlot, clearAllPreferences, setAllDayPreference,
+                    saveRoom, editRoom, deleteRoom,
                     saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel
                 };
             }

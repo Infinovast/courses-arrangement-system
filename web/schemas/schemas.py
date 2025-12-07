@@ -97,7 +97,7 @@ class TeacherPreferenceBase(BaseModel):
 
 
 class TeacherPreferenceCreate(TeacherPreferenceBase):
-    teacher_id: int
+    pass  # teacher_id 从 URL 路径获取
 
 
 class TeacherPreferenceResponse(TeacherPreferenceBase):
@@ -290,6 +290,7 @@ class ScheduleSessionResponse(BaseModel):
     semester: str = "first"
     status: str
     fitness_score: Optional[float] = None
+    penalty_details: Optional[dict] = None
     message: Optional[str] = None
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

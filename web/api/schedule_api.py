@@ -300,78 +300,279 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         
         # ==================== 1. 按行政班的课表（网格视图） ====================
-        for admin_class in admin_classes:
+        # 排序：专业名称正序，年级倒序，班级正序
+        sorted_admin_classes = sorted(
+            admin_classes,
+            key=lambda ac: (
+                cohort_map.get(ac.cohort_id).major if cohort_map.get(ac.cohort_id) else '',
+                -(cohort_map.get(ac.cohort_id).grade if cohort_map.get(ac.cohort_id) else 0),
+                ac.class_index
+            )
+        )
+        for admin_class in sorted_admin_classes:
             cohort = cohort_map.get(admin_class.cohort_id)
             if not cohort:
                 continue
             
             # 筛选该行政班的课程
-            class_results = [r for r in results if r.admin_class_id == admin_class.id or 
-                           (r.cohort_id == cohort.id and r.is_fixed)]
+            # 注意：固定课已经按admin_class_id正确存储，只需按admin_class_id筛选即可
+            class_results = [r for r in results if r.admin_class_id == admin_class.id]
             
             if not class_results:
                 continue
             
             # 聚合数据：按(day, period, course, teacher, ...)分组收集周次
+            # key增加teaching_class_id和subgroup_ids以便后续分组
             grid_data = {}
             for r in class_results:
-                key = (r.day, r.period, r.course_name, r.teacher_name, r.is_lab, r.is_fixed, r.room_name, r.duration)
+                # 将subgroup_ids转为排序后的字符串，作为子组集合标识
+                subgroup_key = ','.join(sorted(r.subgroup_ids)) if r.subgroup_ids else ''
+                key = (r.day, r.period, r.course_name, r.teacher_name, r.is_lab, r.is_fixed, r.room_name, r.duration, r.teaching_class_id, subgroup_key)
                 if key not in grid_data:
                     grid_data[key] = {'weeks': [], 'id': r.id}
                 grid_data[key]['weeks'].append(r.week)
             
-            # 检测时间冲突：找出有冲突的课程和无冲突的课程
-            time_slot_map = defaultdict(list)  # 时间槽 -> [key列表]
-            for key, data in grid_data.items():
-                d, p, course, teacher, is_lab, is_fixed, room, duration = key
-                for period_offset in range(duration):
-                    slot = (d, p + period_offset)
-                    time_slot_map[slot].append(key)
+            # 第一步：找出同一门课程的不同教学班
+            # 注意：固定课排除在外，因为固定课的teaching_class_id包含时间信息，会被误判为多教学班
+            course_name_to_tc_ids = defaultdict(set)
+            for key in grid_data.keys():
+                d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
+                if not is_fixed:  # 只统计非固定课
+                    course_name_to_tc_ids[course].add(tc_id)
             
-            conflict_keys = set()  # 有冲突的key
-            for slot, keys in time_slot_map.items():
-                if len(keys) > 1:
-                    for k in keys:
-                        conflict_keys.add(k)
+            # 第二步：找出当前行政班实际涉及的多教学班课程
+            multi_tc_courses = []
+            for course, tc_id_set in course_name_to_tc_ids.items():
+                if len(tc_id_set) > 1:
+                    multi_tc_courses.append({
+                        'course_name': course,
+                        'tc_ids': list(tc_id_set)
+                    })
             
-            non_conflict_keys = [k for k in grid_data.keys() if k not in conflict_keys]
-            conflict_key_list = [k for k in grid_data.keys() if k in conflict_keys]
-            
-            # 将有冲突的课程分组
-            schedule_groups = []
-            for key in conflict_key_list:
-                d, p, course, teacher, is_lab, is_fixed, room, duration = key
-                key_slots = set((d, p + offset) for offset in range(duration))
+            # 如果没有多教学班课程，检查时间冲突
+            if not multi_tc_courses:
+                # 回退到时间冲突检测逻辑
+                # 注意：只有当两门课的时间槽和周次都有重叠时，才算真正的冲突
+                # 例如：形势与政策（第6-7周）和数据挖掘（第1-5,8-16周）在同一时间段，但周次不重叠，不算冲突
                 
-                placed = False
-                for group in schedule_groups:
-                    has_conflict = False
-                    for existing_key in group:
-                        ed, ep, _, _, _, _, _, edur = existing_key
-                        existing_slots = set((ed, ep + offset) for offset in range(edur))
-                        if key_slots & existing_slots:
-                            has_conflict = True
+                def weeks_overlap(weeks1, weeks2):
+                    """ 检查两个周次列表是否有重叠 """
+                    return bool(set(weeks1) & set(weeks2))
+                
+                time_slot_map = defaultdict(list)
+                for key in grid_data.keys():
+                    d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
+                    for period_offset in range(duration):
+                        slot = (d, p + period_offset)
+                        time_slot_map[slot].append(key)
+                
+                # 检测真正的时间冲突（时间槽相同且周次有重叠）
+                conflict_keys = set()
+                for slot, keys in time_slot_map.items():
+                    if len(keys) > 1:
+                        # 检查这些课程的周次是否真正重叠
+                        for i, k1 in enumerate(keys):
+                            for k2 in keys[i+1:]:
+                                weeks1 = grid_data[k1]['weeks']
+                                weeks2 = grid_data[k2]['weeks']
+                                if weeks_overlap(weeks1, weeks2):
+                                    conflict_keys.add(k1)
+                                    conflict_keys.add(k2)
+                
+                non_conflict_keys = [k for k in grid_data.keys() if k not in conflict_keys]
+                conflict_key_list = [k for k in grid_data.keys() if k in conflict_keys]
+                
+                # 将有冲突的课程分组（同样要考虑周次重叠）
+                schedule_groups = []
+                for key in conflict_key_list:
+                    d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
+                    key_slots = set((d, p + offset) for offset in range(duration))
+                    key_weeks = set(grid_data[key]['weeks'])
+                    
+                    placed = False
+                    for group in schedule_groups:
+                        has_conflict = False
+                        for existing_key in group:
+                            ed, ep, _, _, _, _, _, edur, _, _ = existing_key
+                            existing_slots = set((ed, ep + offset) for offset in range(edur))
+                            existing_weeks = set(grid_data[existing_key]['weeks'])
+                            # 只有时间槽和周次都重叠才算冲突
+                            if (key_slots & existing_slots) and (key_weeks & existing_weeks):
+                                has_conflict = True
+                                break
+                        if not has_conflict:
+                            group.append(key)
+                            placed = True
                             break
-                    if not has_conflict:
-                        group.append(key)
-                        placed = True
-                        break
+                    
+                    if not placed:
+                        schedule_groups.append([key])
                 
-                if not placed:
-                    schedule_groups.append([key])
+                if not schedule_groups:
+                    schedule_groups = [list(grid_data.keys())]
+                else:
+                    schedule_groups = [non_conflict_keys + group for group in schedule_groups]
+            else:
+                # 第三步：按子组集合分组（而非笛卡尔积）
+                # 核心思想：子组相同的教学班放在同一张课表
+                
+                # 收集所有多教学班课程的teaching_class_id -> subgroup_key映射
+                tc_id_to_subgroup_key = {}
+                for key in grid_data.keys():
+                    d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
+                    if sg_key and tc_id not in tc_id_to_subgroup_key:
+                        tc_id_to_subgroup_key[tc_id] = sg_key
+                
+                # 找出所有不同的子组集合，并排序以保证顺序一致
+                subgroup_sets_list = []
+                for item in multi_tc_courses:
+                    for tc_id in item['tc_ids']:
+                        sg_key = tc_id_to_subgroup_key.get(tc_id)
+                        if sg_key and sg_key not in subgroup_sets_list:
+                            subgroup_sets_list.append(sg_key)
+                # 排序以保证与前端顺序一致
+                subgroup_sets_list.sort()
+                
+                # 单教学班课程（放到所有课表）
+                # 固定课始终视为单教学班课程
+                single_tc_keys = [k for k in grid_data.keys() 
+                                  if k[5] or len(course_name_to_tc_ids.get(k[2], set())) <= 1]  # k[5] is is_fixed
+                
+                # 为每个子组集合生成一张课表
+                schedule_groups = []
+                for subgroup_key in subgroup_sets_list:
+                    # 找出属于这个子组集合的多教学班课程
+                    matched_keys = []
+                    for key in grid_data.keys():
+                        d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
+                        if len(course_name_to_tc_ids.get(course, set())) <= 1:
+                            continue
+                        if sg_key == subgroup_key:
+                            matched_keys.append(key)
+                    
+                    if matched_keys:
+                        schedule_groups.append(single_tc_keys + matched_keys)
+                
+                if not schedule_groups:
+                    schedule_groups = [list(grid_data.keys())]
+                
+                # 第四步：按子组子集关系 + 时间不冲突合并课表组
+                # 合并条件：一个子组集合是另一个的子集，且合并后时间不冲突
+                
+                import re
+                # 将subgroup_key转换为数字集合
+                # subgroup_key格式可能是 "1,2,3" 或 "SG_xxx_1,SG_xxx_2,SG_xxx_3"
+                def parse_subgroup_key(key):
+                    nums = set()
+                    for part in key.split(','):
+                        # 尝试直接转换为数字
+                        try:
+                            nums.add(int(part))
+                        except ValueError:
+                            # 从SG_xxx_N中提取数字N
+                            match = re.search(r'_(\d+)$', part)
+                            if match:
+                                nums.add(int(match.group(1)))
+                    return nums
+                
+                # 检查set1是否是set2的子集（或相等）
+                def is_subset(set1, set2):
+                    return set1 <= set2
+                
+                # 检查两个子组集合是否有子集关系（一个包含另一个）
+                def has_subset_relation(set1, set2):
+                    return is_subset(set1, set2) or is_subset(set2, set1)
+                
+                # 检查两个课程列表是否有时间冲突
+                def courses_have_conflict(keys1, keys2):
+                    for key1 in keys1:
+                        d1, p1, course1, _, _, _, _, dur1, _, _ = key1
+                        weeks1 = set(grid_data[key1]['weeks'])
+                        slots1 = set((d1, p1 + offset) for offset in range(dur1))
+                        
+                        for key2 in keys2:
+                            d2, p2, course2, _, _, _, _, dur2, _, _ = key2
+                            # 跳过相同课程（同一课程不同教学班不算冲突）
+                            if course1 == course2:
+                                continue
+                            weeks2 = set(grid_data[key2]['weeks'])
+                            slots2 = set((d2, p2 + offset) for offset in range(dur2))
+                            # 时间槽重叠且周次重叠才算冲突
+                            if (slots1 & slots2) and (weeks1 & weeks2):
+                                return True
+                    return False
+                
+                # 解析子组集合
+                parsed_sets = [parse_subgroup_key(k) for k in subgroup_sets_list]
+                
+                # 为每个子组集合获取对应的多教学班课程
+                subgroup_key_to_multi_keys = {}
+                for i, sg_key in enumerate(subgroup_sets_list):
+                    multi_keys = [k for k in schedule_groups[i] if k not in single_tc_keys]
+                    subgroup_key_to_multi_keys[sg_key] = multi_keys
+                
+                # 贪心合并
+                merged_groups = []
+                used = [False] * len(subgroup_sets_list)
+                
+                for i in range(len(subgroup_sets_list)):
+                    if used[i]:
+                        continue
+                    used[i] = True
+                    
+                    current_keys = {subgroup_sets_list[i]}
+                    current_sets = [parsed_sets[i]]
+                    current_multi_keys = list(subgroup_key_to_multi_keys[subgroup_sets_list[i]])
+                    
+                    # 尝试将其他组合并进来
+                    for j in range(i + 1, len(subgroup_sets_list)):
+                        if used[j]:
+                            continue
+                        
+                        # 条件1：检查是否与当前组中的某个子组集合有子集关系
+                        has_relation = False
+                        for existing_set in current_sets:
+                            if has_subset_relation(parsed_sets[j], existing_set):
+                                has_relation = True
+                                break
+                        if not has_relation:
+                            continue
+                        
+                        # 条件2：检查合并后是否会产生时间冲突
+                        new_multi_keys = subgroup_key_to_multi_keys[subgroup_sets_list[j]]
+                        if courses_have_conflict(current_multi_keys, new_multi_keys):
+                            continue
+                        
+                        # 可以合并
+                        used[j] = True
+                        current_keys.add(subgroup_sets_list[j])
+                        current_sets.append(parsed_sets[j])
+                        current_multi_keys.extend(new_multi_keys)
+                    
+                    # 生成合并后的课表组
+                    merged_groups.append(single_tc_keys + current_multi_keys)
+                
+                schedule_groups = merged_groups if merged_groups else schedule_groups
             
-            # 如果没有冲突，只生成一个课表组
-            if not schedule_groups:
-                schedule_groups = [[]]
+            # 过滤重复的课表组（与前端逻辑一致）
+            unique_schedule_groups = []
+            seen_keys = set()
+            for group in schedule_groups:
+                if not group:
+                    continue
+                # 生成组的唯一标识（按课程ID排序后拼接）
+                group_key = ','.join(sorted(str(grid_data[k]['id']) for k in group))
+                if group_key not in seen_keys:
+                    seen_keys.add(group_key)
+                    unique_schedule_groups.append(group)
+            
+            schedule_groups = unique_schedule_groups if unique_schedule_groups else [list(grid_data.keys())]
             
             sheet_name = f"{cohort.major}{cohort.grade}级{admin_class.class_index}班"[:31]
             
             # 构建所有课表组的数据
             all_table_data = []
-            for group_idx, conflict_group in enumerate(schedule_groups):
-                # 合并无冲突课程和当前组的冲突课程
-                group_keys = non_conflict_keys + conflict_group
-                
+            for group_idx, group_keys in enumerate(schedule_groups):
                 # 添加分组标题（如果有多个分组）
                 if len(schedule_groups) > 1:
                     all_table_data.append([f'课表{group_idx+1}', '', '', '', '', ''])
@@ -385,7 +586,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                     for day in range(1, 6):
                         cell_content = []
                         for key in group_keys:
-                            d, p, course, teacher, is_lab, is_fixed, room, duration = key
+                            d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
                             if d == day and p <= period < p + duration:
                                 weeks = grid_data[key]['weeks']
                                 weeks_sorted = sorted(set(weeks))
@@ -617,14 +818,14 @@ def _format_weeks(weeks: list) -> str:
         # 检查是否连续的单周
         is_consecutive_odd = all(weeks[i] == weeks[i-1] + 2 for i in range(1, len(weeks)))
         if is_consecutive_odd:
-            return "单周"
+            return f"第{weeks[0]}-{weeks[-1]}周, 单周"
     
     # 检查是否为双周模式（所有周次都是偶数，且间隔为2）
     if len(weeks) >= 4 and all(w % 2 == 0 for w in weeks):
         # 检查是否连续的双周
         is_consecutive_even = all(weeks[i] == weeks[i-1] + 2 for i in range(1, len(weeks)))
         if is_consecutive_even:
-            return "双周"
+            return f"第{weeks[0]}-{weeks[-1]}周, 双周"
     
     # 检查全周模式（连续周次）
     if len(weeks) >= 10 and weeks == list(range(weeks[0], weeks[-1] + 1)):

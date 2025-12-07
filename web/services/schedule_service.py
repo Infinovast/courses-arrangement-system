@@ -408,6 +408,7 @@ class ScheduleService:
             
             scheduler = None
             pool = None
+            penalty_details = None
             try:
                 # 限制进程数避免资源耗尽
                 cpu_count = min(multiprocessing.cpu_count(), 4)
@@ -426,6 +427,7 @@ class ScheduleService:
                 
                 ga_results = scheduler.get_results()
                 best_fitness = getattr(scheduler, 'best_fitness', 9999)
+                penalty_details = scheduler.get_penalty_details()
             finally:
                 # 确保资源被清理
                 if pool is not None:
@@ -446,6 +448,7 @@ class ScheduleService:
             # 更新会话状态
             session.status = "completed" if success else "completed_with_warnings"
             session.fitness_score = best_fitness
+            session.penalty_details = penalty_details
             session.message = "排课成功" if success else f"排课完成，但存在冲突（惩罚分数: {best_fitness:.2f}）"
             session.completed_at = datetime.now()
             self.db.commit()
@@ -465,8 +468,13 @@ class ScheduleService:
         """计算虚拟子组到行政班的映射
         
         算法逻辑：
-        使用浮点计算将子组平均分配到行政班。
+        将子组平均分配到行政班。
         每个行政班覆盖一个连续的子组范围，子组可能被多个行政班共享。
+        
+        例如：12个子组，6个行政班 -> 每班2个子组
+        - 1班: 子组1, 2
+        - 2班: 子组3, 4
+        - ...
         
         例如：6个子组，4个行政班 -> 每班1.5个子组
         - 1班: 覆盖[0, 1.5) -> 子组1, 子组2
@@ -481,10 +489,18 @@ class ScheduleService:
         Returns:
             Dict[str, List]: 子组ID -> [行政班DB对象列表]
         """
-        # 获取该专业年级的子组，按ID排序确保一致性
+        import re
+        
+        # 提取子组ID中的数字后缀，用于数字排序
+        def extract_subgroup_number(sg_id: str) -> int:
+            """ 从SG_xxx_N中提取数字N """
+            match = re.search(r'_(\d+)$', sg_id)
+            return int(match.group(1)) if match else 0
+        
+        # 获取该专业年级的子组，按数字后缀排序（而非字符串排序）
         cohort_subgroups = sorted(
             [sg for sg in all_subgroups if sg.cohort.id == cohort_key],
-            key=lambda sg: sg.id
+            key=lambda sg: extract_subgroup_number(sg.id)
         )
         
         # 通过cohort_key反查cohort_id

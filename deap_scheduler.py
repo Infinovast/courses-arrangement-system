@@ -231,9 +231,10 @@ class DeapScheduler:
                     task_req = req.copy()
                     task_req['session_idx'] = session_idx  # 记录是第几次课
                     # course_tc_id 用于分阶段课程的时间一致性约束
+                    # 包含 part_key 以区分理论课和实验课（它们不应被视为同一分组）
                     # 对于 weekly_sessions > 1 的课程，每个 session 有不同的 course_tc_id
                     # 这样它们就不会被误判为"分阶段课程"而被惩罚时间不一致
-                    task_req['course_tc_id'] = f"{tc.course.id}_{tc.id}_s{session_idx}"
+                    task_req['course_tc_id'] = f"{tc.course.id}_{tc.id}_{part_key}_s{session_idx}"
                     self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': task_req})
 
     def _prepare_jit_parameters(self):
@@ -286,6 +287,37 @@ class DeapScheduler:
         course_group_map = {}  # key: course_tc_id, value: group_id
         course_group_ids = []  # 每个任务对应的课程分组ID
 
+        # 【新增】预处理固定课占用，用于过滤合法基因
+        # 构建 (子组索引, 周次, 星期, 节次) -> 是否被固定课占用
+        fixed_slots_by_sg = defaultdict(set)  # sg_idx -> set of (week_0based, day_0based, period_0based)
+        cohort_sgs_map = defaultdict(list)
+        for sg in self.subgroups:
+            cohort_sgs_map[sg.cohort.id].append(sg)
+        
+        for item in self.fixed_schedule:
+            weeks, st, dur = item['week'], item['start_time'], item['duration']
+            d_idx, p_start_idx = st.day - 1, st.period - 1
+            w_indices = [w - 1 for w in weeks if 1 <= w <= len(ALL_WEEKS)]
+            p_indices = list(range(p_start_idx, p_start_idx + dur))
+            if not w_indices or not p_indices:
+                continue
+            
+            sgs = cohort_sgs_map.get(item.get('cohort_id'), [])
+            tag = item.get('group_tag')
+            if tag and tag != 'default':
+                relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag]
+                if not relevant_sgs:
+                    relevant_sgs = sgs
+            else:
+                relevant_sgs = sgs
+            
+            for sg in relevant_sgs:
+                sg_idx = self.subgroup_to_idx.get(sg.id)
+                if sg_idx is not None:
+                    for w_idx in w_indices:
+                        for p_idx in p_indices:
+                            fixed_slots_by_sg[sg_idx].add((w_idx, d_idx, p_idx))
+
         for task in self.tasks:
             valid_genes, req, is_lab, tc = [], task['req'], task['is_lab'], task['tc']
             course_tc_id = req['course_tc_id']  # 用 (课程ID + 教学班ID) 分组
@@ -310,13 +342,51 @@ class DeapScheduler:
 
             hours_per_block = req.get('hours_per_block', 2)
             valid_starts = VALID_START_PERIODS_2_HOURS if hours_per_block == 2 else VALID_START_PERIODS_3_HOURS
+            
+            # 【新增】获取该任务的子组索引，用于检查固定课占用
+            task_sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in self.tc_to_sg_map.get(tc.id, []) if self.subgroup_to_idx.get(sg.id) is not None]
+            
+            # 获取任务的阶段周次
+            phase_weeks = req.get('phase_weeks', [])
 
-            # 生成合法基因（保持不变）
+            # 生成合法基因（新增固定课占用检查）
             for p_idx in p_indices_to_try:
+                pattern_weeks = self.weeks_patterns[list(self.pattern_map.keys())[p_idx]]
+                pattern_weeks_0based = [w - 1 for w in pattern_weeks]
+                
+                # 计算有效周次（与阶段周次取交集）
+                if phase_weeks:
+                    phase_weeks_0based = set(w - 1 for w in phase_weeks)
+                    effective_weeks = [w for w in pattern_weeks_0based if w in phase_weeks_0based]
+                else:
+                    effective_weeks = pattern_weeks_0based
+                
                 for d in DAYS:
                     for p in valid_starts:
                         if p + hours_per_block - 1 > 11:
                             continue
+                        
+                        d_0based = d - 1
+                        p_0based = p - 1
+                        
+                        # 【新增】检查该时间槽是否与固定课冲突
+                        has_fixed_conflict = False
+                        for sg_idx in task_sg_indices:
+                            if sg_idx in fixed_slots_by_sg:
+                                fixed_slots = fixed_slots_by_sg[sg_idx]
+                                for w_idx in effective_weeks:
+                                    for p_offset in range(hours_per_block):
+                                        if (w_idx, d_0based, p_0based + p_offset) in fixed_slots:
+                                            has_fixed_conflict = True
+                                            break
+                                    if has_fixed_conflict:
+                                        break
+                            if has_fixed_conflict:
+                                break
+                        
+                        if has_fixed_conflict:
+                            continue  # 跳过与固定课冲突的时间槽
+                        
                         if is_lab:
                             for r_idx in self.lab_room_indices:
                                 gene = slot_encode_map.get((p_idx, d - 1, p - 1, r_idx))
@@ -378,11 +448,7 @@ class DeapScheduler:
             'preferred_masks': np.zeros((len(self.tasks), len(DAYS), len(PERIODS)), dtype=bool)
         }
 
-        cohort_sgs_map = defaultdict(list)
-        for sg in self.subgroups:
-            cohort_sgs_map[sg.cohort.id].append(sg)
-
-        # 处理固定课程
+        # 处理固定课程（复用之前构建的 cohort_sgs_map）
         for item in self.fixed_schedule:
             weeks, st, dur = item['week'], item['start_time'], item['duration']
             t_idx = self.teacher_to_idx.get(item['teacher_name'])
@@ -554,8 +620,572 @@ class DeapScheduler:
 
         self.best_individual, self.best_fitness = hof[0], hof[0].fitness.values[0]
         print(f"\nGA 演化完成。最优解的最终惩罚值 (所有约束权重最大): {self.best_fitness:.2f}")
+        
+        # 分析并保存惩罚详情
+        self.penalty_details = self._analyze_penalty_details(self.best_individual)
 
         return self.best_fitness < 5000
+    
+    def _analyze_penalty_details(self, individual):
+        """分析惩罚分数的详细来源"""
+        if not individual:
+            return {}
+        
+        # 重建网格并计算各类惩罚
+        slot_decode_map = np.array(self.slot_decode_map_list, dtype=np.int32)
+        tasks_meta = self.jit_params['tasks_meta']
+        course_group_ids = self.jit_params['course_group_ids']
+        num_course_groups = self.jit_params['num_course_groups']
+        num_task_groups = self.jit_params['num_task_groups']
+        semester_weeks_len = self.jit_params['semester_weeks_len']
+        
+        # 初始化网格
+        grid_shape = (len(ALL_WEEKS), len(DAYS), len(PERIODS))
+        teacher_grid = self.jit_params['flat_fixed_teacher_grid'].reshape(self.jit_params['shape_fixed_teacher_grid']).copy()
+        subgroup_grid = self.jit_params['flat_fixed_subgroup_grid'].reshape(self.jit_params['shape_fixed_subgroup_grid']).copy()
+        room_grid = self.jit_params['flat_fixed_room_grid'].reshape(self.jit_params['shape_fixed_room_grid']).copy()
+        
+        # 子组索引映射
+        sg_indices_flat = self.jit_params['task_to_sg_indices_flat']
+        sg_pointers = self.jit_params['task_to_sg_pointers']
+        
+        # 周次模式
+        all_weeks_flat = self.jit_params['all_weeks_patterns_flat']
+        all_weeks_pointers = self.jit_params['all_weeks_patterns_pointers']
+        
+        # 阶段周次
+        phase_weeks_flat = self.jit_params['task_phase_weeks_flat']
+        phase_weeks_pointers = self.jit_params['task_phase_weeks_pointers']
+        
+        # 偏好掩码
+        undesired_masks = self.jit_params['flat_undesired_masks'].reshape(self.jit_params['shape_undesired_masks'])
+        preferred_masks = self.jit_params['flat_preferred_masks'].reshape(self.jit_params['shape_preferred_masks'])
+        
+        # 用于统计软约束
+        day_course_counter = np.zeros((len(self.subgroups), semester_weeks_len, len(DAYS), num_task_groups), dtype=np.int8)
+        course_time_array = np.full((num_course_groups, 2 + 2 * 10), -1, dtype=np.int32)  # max 10 phases
+        
+        # 记录每个任务的时间分配
+        task_assignments = []
+        
+        # 填充网格
+        for i, gene in enumerate(individual):
+            pattern_idx, d_idx, p_idx, r_idx = slot_decode_map[gene]
+            t_idx, is_lab, duration, task_group_id = tasks_meta[i, 0], tasks_meta[i, 1], tasks_meta[i, 2], tasks_meta[i, 3]
+            course_group_id = course_group_ids[i]
+            
+            # 获取子组索引
+            sg_start, sg_end = sg_pointers[i]
+            sg_indices = sg_indices_flat[sg_start:sg_end]
+            
+            # 获取周次
+            wp_start, wp_end = all_weeks_pointers[pattern_idx]
+            raw_weeks = all_weeks_flat[wp_start:wp_end]
+            
+            # 应用阶段周次过滤
+            pw_start, pw_end = phase_weeks_pointers[i]
+            if pw_end > pw_start:
+                phase_weeks = set(phase_weeks_flat[pw_start:pw_end])
+                effective_weeks = [w for w in raw_weeks if w in phase_weeks]
+            else:
+                effective_weeks = list(raw_weeks)
+            
+            # 记录任务分配
+            task_assignments.append({
+                'task_idx': i,
+                'd_idx': d_idx,
+                'p_idx': p_idx,
+                'effective_weeks': effective_weeks
+            })
+            
+            # 填充网格
+            for w_idx in effective_weeks:
+                for p_offset in range(duration):
+                    current_p = p_idx + p_offset
+                    if current_p < len(PERIODS):
+                        if t_idx != -1:
+                            teacher_grid[t_idx, w_idx, d_idx, current_p] += 1
+                        for sg_idx in sg_indices:
+                            subgroup_grid[sg_idx, w_idx, d_idx, current_p] += 1
+                        if is_lab == 1 and r_idx != -1:
+                            room_grid[r_idx, w_idx, d_idx, current_p] += 1
+                
+                # 统计同天同课次数
+                if w_idx < semester_weeks_len:
+                    for sg_idx in sg_indices:
+                        day_course_counter[sg_idx, w_idx, d_idx, task_group_id] += 1
+            
+            # 记录课程时间点（用于分阶段惩罚计算）
+            if course_time_array[course_group_id, 0] == -1:
+                course_time_array[course_group_id, 0] = course_group_id
+            time_count = course_time_array[course_group_id, 1]
+            if time_count < 9:
+                course_time_array[course_group_id, 1] += 1
+                pos = 2 + 2 * time_count
+                course_time_array[course_group_id, pos] = d_idx
+                course_time_array[course_group_id, pos + 1] = p_idx
+        
+        # 统计各类冲突
+        details = {
+            'hard_constraints': {},  # 硬约束
+            'soft_constraints': {},  # 软约束
+            'teacher_conflicts': [],  # 教师冲突详情
+            'subgroup_conflicts': [],  # 学生冲突详情
+            'room_conflicts': [],  # 机房冲突详情
+            'summary': {}  # 汇总
+        }
+        
+        # ========== 硬约束统计 ==========
+        
+        # 1. 教师冲突
+        teacher_conflict_count = 0
+        teacher_conflict_penalty = 0
+        for t_idx in range(teacher_grid.shape[0]):
+            for w_idx in range(teacher_grid.shape[1]):
+                for d_idx in range(teacher_grid.shape[2]):
+                    for p_idx in range(teacher_grid.shape[3]):
+                        val = teacher_grid[t_idx, w_idx, d_idx, p_idx]
+                        if val > 1:
+                            teacher_conflict_count += 1
+                            penalty = (val - 1) * 10000
+                            teacher_conflict_penalty += penalty
+                            teacher_name = next((name for name, idx in self.teacher_to_idx.items() if idx == t_idx), f"教师{t_idx}")
+                            if len(details['teacher_conflicts']) < 20:
+                                details['teacher_conflicts'].append({
+                                    'type': '教师冲突',
+                                    'teacher': teacher_name,
+                                    'week': int(w_idx + 1),
+                                    'day': int(d_idx + 1),
+                                    'period': int(p_idx + 1),
+                                    'conflict_count': int(val),
+                                    'penalty': int(penalty),
+                                    'desc': f"{teacher_name} 在第{w_idx+1}周 周{['一','二','三','四','五'][d_idx]} 第{p_idx+1}节 同时有{val}门课"
+                                })
+        
+        # 2. 学生冲突
+        subgroup_conflict_count = 0
+        subgroup_conflict_penalty = 0
+        for sg_idx in range(subgroup_grid.shape[0]):
+            for w_idx in range(subgroup_grid.shape[1]):
+                for d_idx in range(subgroup_grid.shape[2]):
+                    for p_idx in range(subgroup_grid.shape[3]):
+                        val = subgroup_grid[sg_idx, w_idx, d_idx, p_idx]
+                        if val > 1:
+                            subgroup_conflict_count += 1
+                            penalty = (val - 1) * 10000
+                            subgroup_conflict_penalty += penalty
+                            sg_id = next((sid for sid, idx in self.subgroup_to_idx.items() if idx == sg_idx), f"子组{sg_idx}")
+                            if len(details['subgroup_conflicts']) < 20:
+                                details['subgroup_conflicts'].append({
+                                    'type': '学生冲突',
+                                    'subgroup': sg_id,
+                                    'week': int(w_idx + 1),
+                                    'day': int(d_idx + 1),
+                                    'period': int(p_idx + 1),
+                                    'conflict_count': int(val),
+                                    'penalty': int(penalty),
+                                    'desc': f"{sg_id} 在第{w_idx+1}周 周{['一','二','三','四','五'][d_idx]} 第{p_idx+1}节 同时有{val}门课"
+                                })
+        
+        # 3. 机房冲突
+        room_conflict_count = 0
+        room_conflict_penalty = 0
+        for r_idx in range(room_grid.shape[0]):
+            for w_idx in range(room_grid.shape[1]):
+                for d_idx in range(room_grid.shape[2]):
+                    for p_idx in range(room_grid.shape[3]):
+                        val = room_grid[r_idx, w_idx, d_idx, p_idx]
+                        if val > 1:
+                            room_conflict_count += 1
+                            penalty = (val - 1) * 8000
+                            room_conflict_penalty += penalty
+                            room_id = next((rid for rid, idx in self.room_to_idx.items() if idx == r_idx), None)
+                            room_name = next((r.name for r in self.rooms if r.id == room_id), f"机房{r_idx}") if room_id else f"机房{r_idx}"
+                            if len(details['room_conflicts']) < 20:
+                                details['room_conflicts'].append({
+                                    'type': '机房冲突',
+                                    'room': room_name,
+                                    'week': int(w_idx + 1),
+                                    'day': int(d_idx + 1),
+                                    'period': int(p_idx + 1),
+                                    'conflict_count': int(val),
+                                    'penalty': int(penalty),
+                                    'desc': f"{room_name} 在第{w_idx+1}周 周{['一','二','三','四','五'][d_idx]} 第{p_idx+1}节 同时有{val}节课"
+                                })
+        
+        details['hard_constraints'] = {
+            'teacher_conflict': {'count': teacher_conflict_count, 'penalty': teacher_conflict_penalty, 'weight': 10000, 'desc': '教师时间冲突'},
+            'subgroup_conflict': {'count': subgroup_conflict_count, 'penalty': subgroup_conflict_penalty, 'weight': 10000, 'desc': '学生时间冲突'},
+            'room_conflict': {'count': room_conflict_count, 'penalty': room_conflict_penalty, 'weight': 8000, 'desc': '机房时间冲突'},
+        }
+        
+        # ========== 软约束统计 ==========
+        
+        # 计算软约束权重(最终状态)
+        soft_weight = 1.0  # 最终评估时权重为1
+        day_names = ['一', '二', '三', '四', '五']
+        
+        # 辅助函数：将numpy类型转为Python原生类型
+        def to_native(val):
+            if hasattr(val, 'item'):
+                return val.item()
+            return val
+        
+        # 辅助函数：获取任务的课程信息
+        def get_task_info(task_idx):
+            task = self.tasks[task_idx]
+            tc = task['tc']
+            # 获取专业年级信息
+            cohort_name = ''
+            if hasattr(tc, 'main_cohort') and tc.main_cohort:
+                cohort = tc.main_cohort
+                cohort_name = f"{cohort.major}{cohort.grade}"
+            elif hasattr(tc, 'subgroups') and tc.subgroups:
+                sg = tc.subgroups[0]
+                if hasattr(sg, 'cohort') and sg.cohort:
+                    cohort = sg.cohort
+                    cohort_name = f"{cohort.major}{cohort.grade}"
+            # 如果还是没有，尝试从 tc_to_sg_map 获取
+            if not cohort_name:
+                sgs = self.tc_to_sg_map.get(tc.id, [])
+                if sgs and hasattr(sgs[0], 'cohort') and sgs[0].cohort:
+                    cohort = sgs[0].cohort
+                    cohort_name = f"{cohort.major}{cohort.grade}"
+            return {
+                'course_name': tc.course.name,
+                'teacher_name': tc.teacher_name,
+                'cohort_name': cohort_name,
+                'class_name': tc.name if hasattr(tc, 'name') else str(tc.id),
+                'is_lab': task['is_lab']
+            }
+        
+        # 辅助函数：获取子组名称（优化显示格式）
+        def get_subgroup_name(sg_idx):
+            sg_id = next((sid for sid, idx in self.subgroup_to_idx.items() if idx == sg_idx), None)
+            if sg_id:
+                sg = next((s for s in self.subgroups if s.id == sg_id), None)
+                if sg and hasattr(sg, 'cohort') and sg.cohort:
+                    # 例如: SG_大数据科学与技术大二2023_1 -> 大数据科学与技术2023-子组1
+                    cohort = sg.cohort
+                    # 从 sg.id 提取组号 (最后的数字)
+                    parts = sg.id.split('_')
+                    group_num = parts[-1] if parts else '1'
+                    return f"{cohort.major}{cohort.grade}-子组{group_num}"
+                elif sg:
+                    # 简化显示：移除 SG_ 前缀
+                    display_id = sg.id.replace('SG_', '').replace('_', '-子组')
+                    return display_id
+            return f"子组{sg_idx}"
+        
+        # 记录详情的列表
+        time_diff_details = []
+        undesired_slot_details = []
+        not_preferred_details = []
+        thursday_details = []
+        first_period_details = []
+        same_day_course_details = []
+        consecutive_4_details = []
+        
+        # 构建 course_group_id 到任务索引的映射
+        course_group_to_tasks = defaultdict(list)
+        for i, gene in enumerate(individual):
+            course_group_id = course_group_ids[i]
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            course_group_to_tasks[course_group_id].append((i, d_idx, p_idx))
+        
+        # 1. 分阶段时间不一致惩罚
+        time_diff_penalty = 0
+        time_diff_count = 0
+        time_diff_weight = 100.0
+        for c in range(num_course_groups):
+            time_count = course_time_array[c, 1]
+            if time_count < 1:
+                continue
+            base_d = course_time_array[c, 2]
+            base_p = course_time_array[c, 3]
+            task_indices = course_group_to_tasks.get(c, [])
+            if not task_indices:
+                continue
+            task_info = get_task_info(task_indices[0][0])
+            has_diff = False
+            diff_desc_parts = []
+            for i in range(1, time_count + 1):
+                pos = 2 + 2 * i
+                current_d = course_time_array[c, pos]
+                current_p = course_time_array[c, pos + 1]
+                if current_d == -1:
+                    continue
+                if current_d != base_d:
+                    time_diff_penalty += time_diff_weight * abs(current_d - base_d)
+                    time_diff_count += 1
+                    has_diff = True
+                if current_p != base_p:
+                    time_diff_penalty += time_diff_weight * abs(current_p - base_p)
+                    time_diff_count += 1
+                    has_diff = True
+            if has_diff:
+                # 获取所有阶段的时间
+                times = [f"周{day_names[d]}第{p+1}节" for _, d, p in task_indices]
+                cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
+                # 构建更清晰的描述
+                phase_count = len(times)
+                time_diff_details.append({
+                    'course': task_info['course_name'],
+                    'teacher': task_info['teacher_name'],
+                    'cohort': task_info['cohort_name'],
+                    'class': task_info['class_name'],
+                    'times': times,
+                    'desc': f"{cohort_str}{task_info['course_name']}({task_info['teacher_name']}) 分{phase_count}个阶段上课，各阶段时间不同: {' → '.join(times)}"
+                })
+        
+        # 2. 不希望的时间槽惩罚
+        undesired_slot_penalty = 0
+        undesired_slot_count = 0
+        undesired_weight = 1000.0
+        for i, gene in enumerate(individual):
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            if undesired_masks[i, d_idx, p_idx]:
+                undesired_slot_penalty += undesired_weight * soft_weight
+                undesired_slot_count += 1
+                if True:
+                    task_info = get_task_info(i)
+                    cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
+                    undesired_slot_details.append({
+                        'course': task_info['course_name'],
+                        'teacher': task_info['teacher_name'],
+                        'cohort': task_info['cohort_name'],
+                        'class': task_info['class_name'],
+                        'time': f"周{day_names[d_idx]}第{p_idx+1}节",
+                        'desc': f"{cohort_str}{task_info['course_name']}({task_info['teacher_name']}) 被安排在不希望的时间: 周{day_names[d_idx]}第{p_idx+1}节"
+                    })
+        
+        # 3. 未在偏好时间惩罚
+        not_preferred_penalty = 0
+        not_preferred_count = 0
+        preferred_weight = 50.0
+        for i, gene in enumerate(individual):
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            has_preferred = np.any(preferred_masks[i])
+            if has_preferred and not preferred_masks[i, d_idx, p_idx]:
+                not_preferred_penalty += preferred_weight * soft_weight
+                not_preferred_count += 1
+                if True:
+                    task_info = get_task_info(i)
+                    # 找出偏好的时间
+                    pref_times = []
+                    for pd in range(preferred_masks.shape[1]):
+                        for pp in range(preferred_masks.shape[2]):
+                            if preferred_masks[i, pd, pp]:
+                                pref_times.append(f"周{day_names[pd]}第{pp+1}节")
+                    cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
+                    not_preferred_details.append({
+                        'course': task_info['course_name'],
+                        'teacher': task_info['teacher_name'],
+                        'cohort': task_info['cohort_name'],
+                        'class': task_info['class_name'],
+                        'actual_time': f"周{day_names[d_idx]}第{p_idx+1}节",
+                        'preferred_times': pref_times[:5],  # 最多显示5个
+                        'desc': f"{cohort_str}{task_info['course_name']}({task_info['teacher_name']}) 未安排在偏好时间, 实际: 周{day_names[d_idx]}第{p_idx+1}节"
+                    })
+        
+        # 4. 周四惩罚
+        thursday_penalty = 0
+        thursday_count = 0
+        thursday_weight = 30.0
+        for i, gene in enumerate(individual):
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            if d_idx == 3:  # 周四
+                thursday_penalty += thursday_weight * soft_weight
+                thursday_count += 1
+                if True:
+                    task_info = get_task_info(i)
+                    cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
+                    thursday_details.append({
+                        'course': task_info['course_name'],
+                        'teacher': task_info['teacher_name'],
+                        'cohort': task_info['cohort_name'],
+                        'class': task_info['class_name'],
+                        'time': f"周四第{p_idx+1}节",
+                        'desc': f"{cohort_str}{task_info['course_name']}({task_info['teacher_name']}) 安排在周四第{p_idx+1}节"
+                    })
+        
+        # 5. 第一节课惩罚
+        first_period_penalty = 0
+        first_period_count = 0
+        first_period_weight = 10.0
+        for i, gene in enumerate(individual):
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            if p_idx == 0:  # 第一节
+                first_period_penalty += first_period_weight * soft_weight
+                first_period_count += 1
+                if True:
+                    task_info = get_task_info(i)
+                    cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
+                    first_period_details.append({
+                        'course': task_info['course_name'],
+                        'teacher': task_info['teacher_name'],
+                        'cohort': task_info['cohort_name'],
+                        'class': task_info['class_name'],
+                        'time': f"周{day_names[d_idx]}第1节",
+                        'desc': f"{cohort_str}{task_info['course_name']}({task_info['teacher_name']}) 安排在周{day_names[d_idx]}第1节"
+                    })
+        
+        # 6. 同天同课多次惩罚 - 需要跟踪具体信息
+        same_day_course_penalty = 0
+        same_day_course_count = 0
+        same_day_weight = 200.0
+        # 重新计算并记录详情
+        day_course_info = {}  # (sg_idx, w_idx, d_idx, task_group_id) -> list of task_idx
+        for i, gene in enumerate(individual):
+            _, d_idx, p_idx, _ = slot_decode_map[gene]
+            task = self.tasks[i]
+            task_group_id = tasks_meta[i, 3]
+            sg_start, sg_end = sg_pointers[i]
+            sg_indices_list = sg_indices_flat[sg_start:sg_end]
+            
+            # 获取有效周次
+            pattern_idx = slot_decode_map[gene][0]
+            wp_start, wp_end = all_weeks_pointers[pattern_idx]
+            raw_weeks = all_weeks_flat[wp_start:wp_end]
+            pw_start, pw_end = phase_weeks_pointers[i]
+            if pw_end > pw_start:
+                phase_weeks_set = set(phase_weeks_flat[pw_start:pw_end])
+                effective_weeks = [w for w in raw_weeks if w in phase_weeks_set]
+            else:
+                effective_weeks = list(raw_weeks)
+            
+            for sg_idx in sg_indices_list:
+                for w_idx in effective_weeks:
+                    if w_idx < semester_weeks_len:
+                        key = (sg_idx, w_idx, d_idx, task_group_id)
+                        if key not in day_course_info:
+                            day_course_info[key] = []
+                        day_course_info[key].append(i)
+        
+        for key, task_list in day_course_info.items():
+            if len(task_list) > 1:
+                sg_idx, w_idx, d_idx, task_group_id = key
+                same_day_course_penalty += (len(task_list) - 1) * same_day_weight * soft_weight
+                same_day_course_count += 1
+                if True:
+                    task_info = get_task_info(task_list[0])
+                    sg_name = get_subgroup_name(sg_idx)
+                    same_day_course_details.append({
+                        'course': task_info['course_name'],
+                        'teacher': task_info['teacher_name'],
+                        'class': sg_name,
+                        'week': to_native(w_idx) + 1,
+                        'day': day_names[to_native(d_idx)],
+                        'times': len(task_list),
+                        'desc': f"{sg_name} 在第{to_native(w_idx)+1}周周{day_names[to_native(d_idx)]} {task_info['course_name']} 有{len(task_list)}次课"
+                    })
+        
+        # 7. 连续4节课惩罚 - 记录具体信息
+        consecutive_4_penalty = 0
+        consecutive_4_count = 0
+        consecutive_weight = 70.0
+        for sg_idx in range(subgroup_grid.shape[0]):
+            for w_idx in range(semester_weeks_len):
+                for d_idx in range(subgroup_grid.shape[2]):
+                    day_schedule = subgroup_grid[sg_idx, w_idx, d_idx]
+                    if np.count_nonzero(day_schedule[:4]) == 4:  # 上午14节全满
+                        consecutive_4_penalty += consecutive_weight * soft_weight
+                        consecutive_4_count += 1
+                        if True:
+                            sg_name = get_subgroup_name(sg_idx)
+                            consecutive_4_details.append({
+                                'class': sg_name,
+                                'week': to_native(w_idx) + 1,
+                                'day': day_names[to_native(d_idx)],
+                                'period': '上午1-4节',
+                                'desc': f"{sg_name} 在第{to_native(w_idx)+1}周周{day_names[to_native(d_idx)]} 上午连续4节课"
+                            })
+                    if np.count_nonzero(day_schedule[4:8]) == 4:  # 下午14节全满
+                        consecutive_4_penalty += consecutive_weight * soft_weight
+                        consecutive_4_count += 1
+                        if True:
+                            sg_name = get_subgroup_name(sg_idx)
+                            consecutive_4_details.append({
+                                'class': sg_name,
+                                'week': to_native(w_idx) + 1,
+                                'day': day_names[to_native(d_idx)],
+                                'period': '下午5-8节',
+                                'desc': f"{sg_name} 在第{to_native(w_idx)+1}周周{day_names[to_native(d_idx)]} 下午连续4节课"
+                            })
+        
+        details['soft_constraints'] = {
+            'time_diff': {
+                'count': time_diff_count, 
+                'penalty': round(time_diff_penalty, 2), 
+                'weight': time_diff_weight, 
+                'desc': '分阶段上课时间不同(建议各阶段保持相同时间)',
+                'items': time_diff_details
+            },
+            'undesired_slot': {
+                'count': undesired_slot_count, 
+                'penalty': round(undesired_slot_penalty, 2), 
+                'weight': undesired_weight, 
+                'desc': '安排在不希望的时间',
+                'items': undesired_slot_details
+            },
+            'not_preferred': {
+                'count': not_preferred_count, 
+                'penalty': round(not_preferred_penalty, 2), 
+                'weight': preferred_weight, 
+                'desc': '未安排在偏好时间',
+                'items': not_preferred_details
+            },
+            'thursday': {
+                'count': thursday_count, 
+                'penalty': round(thursday_penalty, 2), 
+                'weight': thursday_weight, 
+                'desc': '周四排课惩罚',
+                'items': thursday_details
+            },
+            'first_period': {
+                'count': first_period_count, 
+                'penalty': round(first_period_penalty, 2), 
+                'weight': first_period_weight, 
+                'desc': '第一节课惩罚',
+                'items': first_period_details
+            },
+            'same_day_course': {
+                'count': same_day_course_count, 
+                'penalty': round(same_day_course_penalty, 2), 
+                'weight': same_day_weight, 
+                'desc': '同天同课多次',
+                'items': same_day_course_details
+            },
+            'consecutive_4': {
+                'count': consecutive_4_count, 
+                'penalty': round(consecutive_4_penalty, 2), 
+                'weight': consecutive_weight, 
+                'desc': '连续4节课',
+                'items': consecutive_4_details
+            },
+        }
+        
+        # 计算汇总
+        hard_total = teacher_conflict_penalty + subgroup_conflict_penalty + room_conflict_penalty
+        soft_total = time_diff_penalty + undesired_slot_penalty + not_preferred_penalty + thursday_penalty + first_period_penalty + same_day_course_penalty + consecutive_4_penalty
+        
+        details['summary'] = {
+            'total_penalty': round(float(self.best_fitness), 2),
+            'hard_constraint_penalty': round(hard_total, 2),
+            'soft_constraint_penalty': round(soft_total, 2),
+            'teacher_conflict_count': teacher_conflict_count,
+            'teacher_conflict_penalty': teacher_conflict_penalty,
+            'subgroup_conflict_count': subgroup_conflict_count,
+            'subgroup_conflict_penalty': subgroup_conflict_penalty,
+            'room_conflict_count': room_conflict_count,
+            'room_conflict_penalty': room_conflict_penalty,
+        }
+        
+        return details
+    
+    def get_penalty_details(self):
+        """获取惩罚详情"""
+        return getattr(self, 'penalty_details', {})
     
     def cleanup(self):
         """清理资源，释放内存"""

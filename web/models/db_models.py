@@ -257,6 +257,7 @@ class ScheduleSession(Base):
     semester = Column(String(10), default="first", comment="排课学期: first(上册), second(下册)")
     status = Column(String(50), default="pending", comment="状态: pending, running, completed, completed_with_warnings, failed")
     fitness_score = Column(Float, nullable=True, comment="适应度分数")
+    penalty_details = Column(JSON, nullable=True, comment="惩罚分数详情")
     message = Column(Text, nullable=True, comment="消息")
     created_at = Column(DateTime, server_default=func.now())
     completed_at = Column(DateTime, nullable=True)
