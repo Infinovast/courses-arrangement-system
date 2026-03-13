@@ -171,7 +171,7 @@ class DeapScheduler:
         self.teacher_to_idx = {t.name: i for i, t in enumerate(self.teachers)}
         self.subgroup_to_idx = {sg.id: i for i, sg in enumerate(self.subgroups)}
         self.room_to_idx = {r.id: i for i, r in enumerate(self.rooms)}
-        self.lab_room_indices = [self.room_to_idx[r.id] for r in self.rooms if "机房" in r.name]
+        self.lab_room_indices = [self.room_to_idx[r.id] for r in self.rooms]
 
     def _create_scheduling_tasks(self):
         self.tasks = []

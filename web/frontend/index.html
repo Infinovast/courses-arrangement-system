@@ -1644,7 +1644,7 @@
                         const timeSlotMap = new Map(); // key: 'day-period-week', value: course
                         for (const course of allCourses) {
                             const weeks = course.week_str.match(/\d+/g).map(Number); // 简易解析周次
-                            for (let w of weeks) { // 简化为只检查当前周
+                            for (let w = 1; w <= 20; w++) { // 简化为只检查当前周
                                 if (w !== selectedWeek.value) continue;
                                 for (let p = 0; p < course.duration; p++) {
                                     const slotKey = `${course.day}-${course.period + p}-${w}`;
@@ -1662,7 +1662,7 @@
                             if (processedCourses.has(course.id)) return;
                             let inConflict = false;
                             const weeks = course.week_str.match(/\d+/g).map(Number);
-                             for (let w of weeks) {
+                             for (let w = 1; w <= 20; w++) {
                                 if (w !== selectedWeek.value) continue;
                                 for (let p = 0; p < course.duration; p++) {
                                     const slotKey = `${course.day}-${course.period + p}-${w}`;
@@ -1896,10 +1896,36 @@
                     return Array.from(teacherNames).join(', ');
                 };
 
+                const isWeekActive = (weekStr, week) => {
+                    if (!weekStr) return false;
+                    if (weekStr === '单周') return week % 2 === 1 && week <= 17;
+                    if (weekStr === '双周') return week % 2 === 0 && week <= 18;
+
+                    const str = weekStr.replace('第', '').replace('周', '').replace(', 单周', '').replace(', 双周', '');
+                    const isOdd = weekStr.includes('单周');
+                    const isEven = weekStr.includes('双周');
+
+                    if (isOdd && week % 2 === 0) return false;
+                    if (isEven && week % 2 === 1) return false;
+
+                    const parts = str.split(',');
+                    for (let part of parts) {
+                        part = part.trim();
+                        if (!part) continue;
+                        if (part.includes('-')) {
+                            const [start, end] = part.split('-').map(Number);
+                            if (week >= start && week <= end) return true;
+                        } else {
+                            if (Number(part) === week) return true;
+                        }
+                    }
+                    return false;
+                };
                 const getCoursesAt = (day, period) => {
                     // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return scheduleResults.value.filter(r => {
-                        if(r.week !== selectedWeek.value) return false;
+                        // 【修复】：从判断死板的首个 r.week 升级为解析并判断整个 week_str
+                        if(!isWeekActive(r.week_str, selectedWeek.value)) return false;
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
                         const endPeriod = startPeriod + (r.duration || 1) - 1;
@@ -1911,7 +1937,8 @@
                 const getCoursesAtForGroup = (day, period, groupCourses) => {
                     // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return groupCourses.filter(r => {
-                        if(r.week !== selectedWeek.value) return false;
+                        // 【修复】：同样的过滤修复
+                        if(!isWeekActive(r.week_str, selectedWeek.value)) return false;
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
                         const endPeriod = startPeriod + (r.duration || 1) - 1;
@@ -2533,7 +2560,7 @@
                     cohortTeachingClassTotal, updateCohortTeachingClassCount, effectiveTeachingClassCount, teacherConfigTotal, canUseMultiTeacher,
                     addTeacherConfig, removeTeacherConfig,
                     refreshData, openModal, closeModal, showToast, formatDate, getStatusText, navigateToStat,
-                    getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTeachers, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, getCoursesAt, getCoursesAtForGroup,
+                    getCohortName, getAdminClassCount, getAdminClassName, getAdminClassNames, getCourseTeachers, getCourseTypeName, getCourseTypeClass, getSemesterName, getSemesterClass, getCategoryName, getCategoryClass, isWeekActive, getCoursesAt, getCoursesAtForGroup,
                     saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
                     saveTeacher, editTeacher, deleteTeacher, isPreferredSlot, isUndesiredSlot, getPreferenceSlotClass, togglePreferenceSlot, clearAllPreferences, setAllDayPreference,
                     saveRoom, editRoom, deleteRoom,

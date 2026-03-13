@@ -361,7 +361,12 @@ class ScheduleService:
                 if item.get('admin_class_ids'):
                     sg_ids = set()
                     for ac_id in item['admin_class_ids']:
-                        sg_ids.update(admin_to_subgroup_ids.get(ac_id, []))
+                        # 确保强制转为整数处理匹配
+                        try:
+                            ac_id_int = int(ac_id)
+                            sg_ids.update(admin_to_subgroup_ids.get(ac_id_int, []))
+                        except (ValueError, TypeError):
+                            pass
                     item['subgroup_ids'] = list(sg_ids)
                 else:
                     cohort_id = item.get('cohort_id')
@@ -620,8 +625,15 @@ class ScheduleService:
             if cohort_id:
                 admin_classes_db = self._admin_classes_by_cohort.get(cohort_id, [])
                 if specified_admin_class_ids:
+                    # 【核心修复】强制将其转为整型以防止与 JSON 返回的字符串 "1" 发生不匹配问题！
+                    spec_ids = []
+                    for x in specified_admin_class_ids:
+                        try:
+                            spec_ids.append(int(x))
+                        except (ValueError, TypeError):
+                            pass
                     for ac in admin_classes_db:
-                        if ac.id in specified_admin_class_ids:
+                        if ac.id in spec_ids:
                             admin_class_db_list.append(ac)
                 else:
                     admin_class_db_list = admin_classes_db
