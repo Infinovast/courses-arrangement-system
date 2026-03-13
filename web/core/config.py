@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     DATABASE_PORT: int = 5432
     DATABASE_USER: str = "postgres"
     DATABASE_PASSWORD: str = "123456"
-    DATABASE_NAME: str = "paike_db"
+    DATABASE_NAME: str = "paike1_db"
 
     # API配置
     API_PREFIX: str = "/api/v1"

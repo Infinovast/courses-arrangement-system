@@ -1614,6 +1614,141 @@
                     return years;
                 });
 
+                // 核心修改：为行政班分组课表
+                const groupedSchedules = computed(() => {
+                    if (!selectedAdminClass.value || scheduleResults.value.length === 0) {
+                        return [scheduleResults.value]; // 默认返回一个组
+                    }
+
+                    const allCourses = scheduleResults.value;
+
+                    // 1. 识别多教学班课程
+                    const courseNameToTcIds = new Map();
+                    for (const course of allCourses) {
+                        if (course.is_fixed) continue;
+                        if (!courseNameToTcIds.has(course.course_name)) {
+                            courseNameToTcIds.set(course.course_name, new Set());
+                        }
+                        courseNameToTcIds.get(course.course_name).add(course.teaching_class_id);
+                    }
+
+                    const multiTcCourseNames = new Set();
+                    for (const [name, tcIds] of courseNameToTcIds.entries()) {
+                        if (tcIds.size > 1) {
+                            multiTcCourseNames.add(name);
+                        }
+                    }
+
+                    // 2. 如果没有多教学班课程，则按时间冲突分组
+                    if (multiTcCourseNames.size === 0) {
+                        const timeSlotMap = new Map(); // key: 'day-period-week', value: course
+                        for (const course of allCourses) {
+                            const weeks = course.week_str.match(/\d+/g).map(Number); // 简易解析周次
+                            for (let w of weeks) { // 简化为只检查当前周
+                                if (w !== selectedWeek.value) continue;
+                                for (let p = 0; p < course.duration; p++) {
+                                    const slotKey = `${course.day}-${course.period + p}-${w}`;
+                                    if (!timeSlotMap.has(slotKey)) timeSlotMap.set(slotKey, []);
+                                    timeSlotMap.get(slotKey).push(course);
+                                }
+                            }
+                        }
+
+                        const conflictGroups = [];
+                        const nonConflictCourses = [];
+                        const processedCourses = new Set();
+
+                        allCourses.forEach(course => {
+                            if (processedCourses.has(course.id)) return;
+                            let inConflict = false;
+                            const weeks = course.week_str.match(/\d+/g).map(Number);
+                             for (let w of weeks) {
+                                if (w !== selectedWeek.value) continue;
+                                for (let p = 0; p < course.duration; p++) {
+                                    const slotKey = `${course.day}-${course.period + p}-${w}`;
+                                    if (timeSlotMap.get(slotKey)?.length > 1) {
+                                        inConflict = true;
+                                        break;
+                                    }
+                                }
+                                if(inConflict) break;
+                            }
+
+                            if (inConflict) {
+                                let added = false;
+                                for (const group of conflictGroups) {
+                                    let hasConflictWithGroup = false;
+                                    for(const existingCourse of group) {
+                                        // 简单时间冲突检查
+                                        if (existingCourse.day === course.day && Math.max(existingCourse.period, course.period) < Math.min(existingCourse.period + existingCourse.duration, course.period + course.duration)) {
+                                            hasConflictWithGroup = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!hasConflictWithGroup) {
+                                        group.push(course);
+                                        added = true;
+                                        break;
+                                    }
+                                }
+                                if (!added) {
+                                    conflictGroups.push([course]);
+                                }
+                            } else {
+                                nonConflictCourses.push(course);
+                            }
+                            processedCourses.add(course.id);
+                        });
+
+                        if (conflictGroups.length === 0) return [allCourses];
+                        return conflictGroups.map(group => [...nonConflictCourses, ...group]);
+                    }
+
+                    // 3. 按子组集合分组
+                    const tcIdToSubgroupKey = new Map();
+                    for (const course of allCourses) {
+                        if (course.subgroup_ids && course.subgroup_ids.length > 0) {
+                            const key = [...course.subgroup_ids].sort().join(',');
+                            tcIdToSubgroupKey.set(course.teaching_class_id, key);
+                        }
+                    }
+
+                    const subgroupKeySet = new Set();
+                    for (const name of multiTcCourseNames) {
+                        for (const tcId of courseNameToTcIds.get(name)) {
+                            const key = tcIdToSubgroupKey.get(tcId);
+                            if (key) subgroupKeySet.add(key);
+                        }
+                    }
+                    const subgroupKeys = [...subgroupKeySet].sort();
+
+                    if (subgroupKeys.length === 0) return [allCourses];
+
+                    const singleTcCourses = allCourses.filter(c => !multiTcCourseNames.has(c.course_name));
+
+                    const scheduleGroups = subgroupKeys.map(key => {
+                        const groupCourses = allCourses.filter(c => {
+                             if (!multiTcCourseNames.has(c.course_name)) return false;
+                             const courseKey = tcIdToSubgroupKey.get(c.teaching_class_id);
+                             return courseKey === key;
+                        });
+                        return [...singleTcCourses, ...groupCourses];
+                    });
+
+                    // 简单去重
+                    const uniqueGroups = [];
+                    const seenKeys = new Set();
+                    for(const group of scheduleGroups) {
+                        const key = group.map(c => c.id).sort().join(',');
+                        if(!seenKeys.has(key)) {
+                            uniqueGroups.push(group);
+                            seenKeys.add(key);
+                        }
+                    }
+
+                    return uniqueGroups.length > 0 ? uniqueGroups : [allCourses];
+                });
+
                 // API 请求
                 const api = async (url, options = {}) => {
                     try {
@@ -1653,9 +1788,14 @@
                     if (!latestSession.value) return;
                     try {
                         const params = new URLSearchParams();
-                        if (selectedWeek.value) params.append('week', selectedWeek.value);
-                        if (selectedCohortForSchedule.value) params.append('cohort_id', selectedCohortForSchedule.value);
-                        if (selectedAdminClass.value) params.append('admin_class_id', selectedAdminClass.value);
+                        // 关键修改：如果选择了行政班，则不按周次筛选，获取所有周次的数据
+                        if (selectedAdminClass.value) {
+                            params.append('admin_class_id', selectedAdminClass.value);
+                        } else {
+                            if (selectedCohortForSchedule.value) params.append('cohort_id', selectedCohortForSchedule.value);
+                            // 如果没选行政班，还是按周筛选以减少数据量
+                            if (selectedWeek.value) params.append('week', selectedWeek.value);
+                        }
                         scheduleResults.value = await api(`/schedule/results/${latestSession.value.session_id}?${params}`);
                     } catch {}
                 };
@@ -1687,7 +1827,7 @@
                     lab_only: 'bg-cyan-500/20 text-cyan-400',
                     mixed: 'bg-purple-500/20 text-purple-400'
                 }[type] || 'bg-gray-500/20 text-gray-400');
-                
+
                 const getSemesterName = (semester) => ({ first: '上册', second: '下册', both: '全年' }[semester] || '上册');
                 const getSemesterClass = (semester) => ({
                     first: 'bg-green-500/20 text-green-400',
@@ -1707,7 +1847,7 @@
                     if (category === 'regular' && (!cohortId || (cohortIds && cohortIds.length > 1))) return 'bg-yellow-500/20 text-yellow-400';
                     return 'bg-accent-500/20 text-accent-400';
                 };
-                
+
                 // 获取固定课的行政班显示文本
                 const getAdminClassNames = (adminClassIds) => {
                     if (!adminClassIds || adminClassIds.length === 0) return '全部';
@@ -1717,15 +1857,15 @@
                     }).filter(Boolean);
                     return names.length > 0 ? names.join(', ') : '全部';
                 };
-                
+
                 // 获取课程的所有教师名称(包括双教师和多教师分教学班)
                 const getCourseTeachers = (course) => {
                     if (course.category === 'fixed') {
                         return course.teacher_name || '-';
                     }
-                    
+
                     const teacherNames = new Set();
-                    
+
                     // 1. 多教师分教学班配置中的教师
                     if (course.teacher_configs && course.teacher_configs.length > 0) {
                         for (const config of course.teacher_configs) {
@@ -1751,7 +1891,7 @@
                             if (t) teacherNames.add(t.name);
                         }
                     }
-                    
+
                     if (teacherNames.size === 0) return '-';
                     return Array.from(teacherNames).join(', ');
                 };
@@ -1759,331 +1899,25 @@
                 const getCoursesAt = (day, period) => {
                     // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return scheduleResults.value.filter(r => {
+                        if(r.week !== selectedWeek.value) return false;
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
                         const endPeriod = startPeriod + (r.duration || 1) - 1;
                         return period >= startPeriod && period <= endPeriod;
                     });
                 };
-                
+
                 // 获取特定子组的课程
                 const getCoursesAtForGroup = (day, period, groupCourses) => {
                     // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return groupCourses.filter(r => {
+                        if(r.week !== selectedWeek.value) return false;
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
                         const endPeriod = startPeriod + (r.duration || 1) - 1;
                         return period >= startPeriod && period <= endPeriod;
                     });
                 };
-                
-                // 按教学班分组课表：同一门课的不同教学班分开显示
-                // 解决问题：当一个行政班涉及多个教学班（如线性代数2班同时属于教学班1和教学班2）
-                // 需要分成多张课表显示，让用户知道这个班的学生被分成了不同的组
-                // 
-                // 优化策略：按子组集合分组，而非笛卡尔积
-                // 例如：C++有教学班1(子组1234)和教学班2(子组56)，数据库也有教学班1(子组1234)和教学班2(子组56)
-                // 则只需要2张课表：课表A(子组1234的课) 和 课表B(子组56的课)
-                // 而不是笛卡尔积的4张课表
-                const groupedSchedules = computed(() => {
-                    if (!selectedAdminClass.value || scheduleResults.value.length === 0) {
-                        return [];
-                    }
-                    
-                    // 第一步：找出同一门课程的不同教学班
-                    // courseNameToTcIds: 课程名 -> [teaching_class_id 列表]
-                    const courseNameToTcIds = new Map();
-                    for (const course of scheduleResults.value) {
-                        const courseName = course.course_name;
-                        const tcId = course.teaching_class_id;
-                        if (!courseNameToTcIds.has(courseName)) {
-                            courseNameToTcIds.set(courseName, new Set());
-                        }
-                        courseNameToTcIds.get(courseName).add(tcId);
-                    }
-                    
-                    // 第二步：找出当前行政班实际涉及的多教学班课程
-                    const multiTcCourses = [];
-                    for (const [courseName, tcIdSet] of courseNameToTcIds.entries()) {
-                        if (tcIdSet.size > 1) {
-                            multiTcCourses.push({
-                                courseName,
-                                tcIds: [...tcIdSet]
-                            });
-                        }
-                    }
-                    
-                    // 如果没有多教学班课程，检查时间冲突
-                    if (multiTcCourses.length === 0) {
-                        // 回退到时间冲突检测逻辑
-                        // 使用 (id + teaching_class_id) 作为唯一标识，避免不同教学班的课程被误判为同一课
-                        const getCourseKey = (c) => `${c.id}_${c.teaching_class_id}`;
-                        
-                        const timeSlotMap = new Map();
-                        for (const course of scheduleResults.value) {
-                            const duration = course.duration || 1;
-                            for (let p = course.period; p < course.period + duration; p++) {
-                                const slot = `${course.day}-${p}`;
-                                if (!timeSlotMap.has(slot)) {
-                                    timeSlotMap.set(slot, []);
-                                }
-                                timeSlotMap.get(slot).push(course);
-                            }
-                        }
-                        
-                        let hasTimeConflict = false;
-                        for (const [slot, courses] of timeSlotMap.entries()) {
-                            // 使用 getCourseKey 去重
-                            const uniqueCourses = [...new Map(courses.map(c => [getCourseKey(c), c])).values()];
-                            if (uniqueCourses.length > 1) {
-                                hasTimeConflict = true;
-                                break;
-                            }
-                        }
-                        
-                        if (!hasTimeConflict) {
-                            return [scheduleResults.value];
-                        }
-                        
-                        // 有时间冲突，按时间冲突分组
-                        const conflictCourseKeys = new Set();
-                        for (const [slot, courses] of timeSlotMap.entries()) {
-                            const uniqueCourses = [...new Map(courses.map(c => [getCourseKey(c), c])).values()];
-                            if (uniqueCourses.length > 1) {
-                                uniqueCourses.forEach(c => conflictCourseKeys.add(getCourseKey(c)));
-                            }
-                        }
-                        
-                        const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourseKeys.has(getCourseKey(c)));
-                        const conflictCourseList = scheduleResults.value.filter(c => conflictCourseKeys.has(getCourseKey(c)));
-                        
-                        const scheduleGroups = [];
-                        for (const course of conflictCourseList) {
-                            const courseSlots = new Set();
-                            const duration = course.duration || 1;
-                            for (let p = course.period; p < course.period + duration; p++) {
-                                courseSlots.add(`${course.day}-${p}`);
-                            }
-                            
-                            let placed = false;
-                            for (const group of scheduleGroups) {
-                                let hasConflict = false;
-                                for (const existingCourse of group) {
-                                    const existingDuration = existingCourse.duration || 1;
-                                    for (let p = existingCourse.period; p < existingCourse.period + existingDuration; p++) {
-                                        if (courseSlots.has(`${existingCourse.day}-${p}`)) {
-                                            hasConflict = true;
-                                            break;
-                                        }
-                                    }
-                                    if (hasConflict) break;
-                                }
-                                
-                                if (!hasConflict) {
-                                    group.push(course);
-                                    placed = true;
-                                    break;
-                                }
-                            }
-                            
-                            if (!placed) {
-                                scheduleGroups.push([course]);
-                            }
-                        }
-                        
-                        return scheduleGroups.map(group => [...nonConflictCourses, ...group]);
-                    }
-                    
-                    // 第三步：按子组集合分组（而非笛卡尔积）
-                    // 核心思想：子组相同的教学班放在同一张课表
-                    // 例如：C++教学班1(子组1234) 和 数据库教学班1(子组1234) 放在课表A
-                    //       C++教学班2(子组56) 和 数据库教学班2(子组56) 放在课表B
-                    
-                    // 收集所有多教学班课程的记录，按teaching_class_id分组
-                    // tcIdToSubgroups: teaching_class_id -> subgroup_ids的排序字符串
-                    const tcIdToSubgroups = new Map();
-                    for (const course of scheduleResults.value) {
-                        const tcId = course.teaching_class_id;
-                        if (!tcIdToSubgroups.has(tcId) && course.subgroup_ids && course.subgroup_ids.length > 0) {
-                            // 将subgroup_ids排序后作为key，确保相同子组集合的课程归到一组
-                            const subgroupKey = [...course.subgroup_ids].sort().join(',');
-                            tcIdToSubgroups.set(tcId, subgroupKey);
-                        }
-                    }
-                    
-                    // 找出所有不同的子组集合（每个集合对应一张课表）
-                    const subgroupSetsSet = new Set();
-                    for (const { tcIds } of multiTcCourses) {
-                        for (const tcId of tcIds) {
-                            const subgroupKey = tcIdToSubgroups.get(tcId);
-                            if (subgroupKey) {
-                                subgroupSetsSet.add(subgroupKey);
-                            }
-                        }
-                    }
-                    // 转为数组并排序，保证与Excel导出顺序一致
-                    const subgroupSetsList = [...subgroupSetsSet].sort();
-                    
-                    // 如果没有有效的子组集合，回退到单课表
-                    if (subgroupSetsList.length === 0) {
-                        return [scheduleResults.value];
-                    }
-                    
-                    // 单教学班课程（放到所有课表）
-                    const singleTcCourses = scheduleResults.value.filter(c => {
-                        const tcIdSet = courseNameToTcIds.get(c.course_name);
-                        return !tcIdSet || tcIdSet.size <= 1;
-                    });
-                    
-                    // 为每个子组集合生成一张课表
-                    const scheduleGroups = [];
-                    for (const subgroupKey of subgroupSetsList) {
-                        // 找出属于这个子组集合的多教学班课程
-                        const matchedCourses = scheduleResults.value.filter(c => {
-                            const tcIdSet = courseNameToTcIds.get(c.course_name);
-                            if (!tcIdSet || tcIdSet.size <= 1) return false;
-                            // 检查该课程的子组是否匹配当前子组集合
-                            const courseSubgroupKey = tcIdToSubgroups.get(c.teaching_class_id);
-                            return courseSubgroupKey === subgroupKey;
-                        });
-                        
-                        if (matchedCourses.length > 0) {
-                            scheduleGroups.push([...singleTcCourses, ...matchedCourses]);
-                        }
-                    }
-                    
-                    // 第四步：按子组子集关系 + 时间不冲突合并课表组
-                    // 合并条件：一个子组集合是另一个的子集，且合并后时间不冲突
-                    // 例如：{1,2,3} ⊂ {1,2,3,4}，且时间不冲突，应该合并
-                    
-                    // 将subgroupKey转换为数字集合
-                    const parseSubgroupKey = (key) => new Set(key.split(',').map(Number));
-                    
-                    // 检查set1是否是set2的子集（或相等）
-                    const isSubset = (set1, set2) => {
-                        for (const s of set1) {
-                            if (!set2.has(s)) return false;
-                        }
-                        return true;
-                    };
-                    
-                    // 检查两个子组集合是否有子集关系（一个包含另一个）
-                    const hasSubsetRelation = (set1, set2) => {
-                        return isSubset(set1, set2) || isSubset(set2, set1);
-                    };
-                    
-                    // 检查两个课程列表是否有时间冲突
-                    const coursesHaveConflict = (courses1, courses2) => {
-                        for (const c1 of courses1) {
-                            const dur1 = c1.duration || 1;
-                            const slots1 = new Set();
-                            for (let p = c1.period; p < c1.period + dur1; p++) {
-                                slots1.add(`${c1.day}-${p}`);
-                            }
-                            const weeks1 = new Set(c1.weeks || [c1.week]);
-                            
-                            for (const c2 of courses2) {
-                                // 跳过相同课程（同一课程不同教学班不算冲突）
-                                if (c1.course_name === c2.course_name) continue;
-                                
-                                const dur2 = c2.duration || 1;
-                                const slots2 = new Set();
-                                for (let p = c2.period; p < c2.period + dur2; p++) {
-                                    slots2.add(`${c2.day}-${p}`);
-                                }
-                                const weeks2 = new Set(c2.weeks || [c2.week]);
-                                
-                                // 检查时间槽是否重叠
-                                let slotsOverlap = false;
-                                for (const s of slots1) {
-                                    if (slots2.has(s)) { slotsOverlap = true; break; }
-                                }
-                                if (!slotsOverlap) continue;
-                                
-                                // 检查周次是否重叠
-                                let weeksOverlap = false;
-                                for (const w of weeks1) {
-                                    if (weeks2.has(w)) { weeksOverlap = true; break; }
-                                }
-                                if (weeksOverlap) return true;
-                            }
-                        }
-                        return false;
-                    };
-                    
-                    const parsedSets = subgroupSetsList.map(parseSubgroupKey);
-                    
-                    // 为每个子组集合获取对应的多教学班课程
-                    const subgroupKeyToCourses = new Map();
-                    for (let i = 0; i < subgroupSetsList.length; i++) {
-                        const key = subgroupSetsList[i];
-                        const courses = scheduleGroups[i].filter(c => {
-                            const tcIdSet = courseNameToTcIds.get(c.course_name);
-                            return tcIdSet && tcIdSet.size > 1;
-                        });
-                        subgroupKeyToCourses.set(key, courses);
-                    }
-                    
-                    // 贪心合并：每个已合并组记录子组集合和课程
-                    // mergedGroupData: [{subgroupKeys: Set, subgroupSets: [Set], courses: [...]}]
-                    const mergedGroupData = [];
-                    const used = new Array(subgroupSetsList.length).fill(false);
-                    
-                    for (let i = 0; i < subgroupSetsList.length; i++) {
-                        if (used[i]) continue;
-                        used[i] = true;
-                        
-                        const currentKeys = new Set([subgroupSetsList[i]]);
-                        const currentSets = [parsedSets[i]];
-                        const currentCourses = [...subgroupKeyToCourses.get(subgroupSetsList[i])];
-                        
-                        // 尝试将其他组合并进来
-                        for (let j = i + 1; j < subgroupSetsList.length; j++) {
-                            if (used[j]) continue;
-                            
-                            // 条件1：检查是否与当前组中的某个子组集合有子集关系
-                            let hasRelation = false;
-                            for (const existingSet of currentSets) {
-                                if (hasSubsetRelation(parsedSets[j], existingSet)) {
-                                    hasRelation = true;
-                                    break;
-                                }
-                            }
-                            if (!hasRelation) continue;
-                            
-                            // 条件2：检查合并后是否会产生时间冲突
-                            const newCourses = subgroupKeyToCourses.get(subgroupSetsList[j]);
-                            if (coursesHaveConflict(currentCourses, newCourses)) continue;
-                            
-                            // 可以合并
-                            used[j] = true;
-                            currentKeys.add(subgroupSetsList[j]);
-                            currentSets.push(parsedSets[j]);
-                            currentCourses.push(...newCourses);
-                        }
-                        
-                        mergedGroupData.push({ keys: currentKeys, courses: currentCourses });
-                    }
-                    
-                    // 生成最终课表组
-                    const mergedGroups = mergedGroupData.map(({ courses }) => 
-                        [...singleTcCourses, ...courses]
-                    );
-                    
-                    // 过滤空组和重复组
-                    const uniqueGroups = [];
-                    const seenKeys = new Set();
-                    for (const group of mergedGroups) {
-                        if (group.length === 0) continue;
-                        const key = group.map(c => c.id).sort().join(',');
-                        if (!seenKeys.has(key)) {
-                            seenKeys.add(key);
-                            uniqueGroups.push(group);
-                        }
-                    }
-                    
-                    return uniqueGroups.length > 0 ? uniqueGroups : [scheduleResults.value];
-                });
 
                 // 计算属性: 多专业教学班总数
                 const cohortTeachingClassTotal = computed(() => {

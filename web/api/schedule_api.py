@@ -9,6 +9,7 @@ import io
 from datetime import datetime
 from typing import List, Optional
 from collections import defaultdict
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -39,7 +40,7 @@ def start_scheduling(
     开始排课流程。
     排课是一个耗时操作，会在后台执行。
     返回会话ID，可用于查询排课状态和结果。
-    
+
     Args:
         request.semester: 学期 - "first"(上册) 或 "second"(下册)
     """
@@ -69,10 +70,10 @@ def get_schedule_sessions(db: Session = Depends(get_db)):
 @router.get("/sessions/latest", response_model=Optional[ScheduleSessionResponse], summary="获取最新排课会话")
 def get_latest_session(semester: Optional[str] = None, db: Session = Depends(get_db)):
     """获取最新的排课会话
-    
+
     Args:
         semester: 学期筛选 - "first"(上册) 或 "second"(下册)，不传则返回最新的
-    
+
     Returns:
         排课会话信息，没有记录时返回 null
     """
@@ -80,11 +81,11 @@ def get_latest_session(semester: Optional[str] = None, db: Session = Depends(get
     session = service.get_latest_session(semester)
     if not session:
         return None
-    
+
     # 获取该会话涉及的所有专业年级ID
     # 分开查询 cohort_id 和 cohort_ids，避免 JSON 类型的 DISTINCT 问题
     cohort_ids_set = set()
-    
+
     # 查询所有不同的 cohort_id
     cohort_id_results = db.query(ScheduleResult.cohort_id).filter(
         ScheduleResult.session_id == session.session_id,
@@ -92,7 +93,7 @@ def get_latest_session(semester: Optional[str] = None, db: Session = Depends(get
     ).distinct().all()
     for r in cohort_id_results:
         cohort_ids_set.add(r.cohort_id)
-    
+
     # 查询所有包含 cohort_ids 的记录（只查询非空的）
     cohort_ids_results = db.query(ScheduleResult.cohort_ids).filter(
         ScheduleResult.session_id == session.session_id,
@@ -102,7 +103,7 @@ def get_latest_session(semester: Optional[str] = None, db: Session = Depends(get
         if r.cohort_ids:
             for cid in r.cohort_ids:
                 cohort_ids_set.add(cid)
-    
+
     # 返回带 cohort_ids 的响应
     return ScheduleSessionResponse(
         id=session.id,
@@ -139,7 +140,7 @@ def get_schedule_results(
     db: Session = Depends(get_db)
 ):
     """获取指定会话的排课结果，支持筛选
-    
+
     Args:
         cohort_id: 专业年级ID筛选
         admin_class_id: 行政班ID筛选
@@ -147,41 +148,56 @@ def get_schedule_results(
         day: 星期几筛选
     """
     from ..dbmodels.db_models import AdminClass, Cohort as CohortModel
-    
-    # 先查询所有结果（不按周筛选），用于聚合周次信息
+
+    # 先查询所有结果，用于聚合周次信息
     all_results_query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
-    if cohort_id:
-        all_results_query = all_results_query.filter(ScheduleResult.cohort_id == cohort_id)
-    if admin_class_id:
+    # 当查询特定行政班时，需要返回所有周次的数据给前端进行分组
+    if not admin_class_id:
+        if cohort_id:
+            all_results_query = all_results_query.filter(ScheduleResult.cohort_id == cohort_id)
+    else:
         all_results_query = all_results_query.filter(ScheduleResult.admin_class_id == admin_class_id)
+
     all_results = all_results_query.all()
-    
+
     # 聚合周次信息：按 (teaching_class_id, day, period, admin_class_id) 分组
     weeks_map = defaultdict(list)
     for r in all_results:
         key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
         weeks_map[key].append(r.week)
-    
-    # 按周筛选结果
-    query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
-    if cohort_id:
-        query = query.filter(ScheduleResult.cohort_id == cohort_id)
-    if admin_class_id:
-        query = query.filter(ScheduleResult.admin_class_id == admin_class_id)
-    if week:
-        query = query.filter(ScheduleResult.week == week)
-    if day:
-        query = query.filter(ScheduleResult.day == day)
 
-    results = query.order_by(
-        ScheduleResult.week,
-        ScheduleResult.day,
-        ScheduleResult.period
-    ).all()
+    # 如果是查询特定行政班，使用 all_results；否则按周筛选
+    if admin_class_id:
+        results = all_results
+    else:
+        query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
+        if cohort_id:
+            query = query.filter(ScheduleResult.cohort_id == cohort_id)
+        if week:
+            query = query.filter(ScheduleResult.week == week)
+        if day:
+            query = query.filter(ScheduleResult.day == day)
+
+        results = query.order_by(
+            ScheduleResult.week,
+            ScheduleResult.day,
+            ScheduleResult.period
+        ).all()
 
     # 补充行政班名称、专业年级名称、周次字符串和课程类型
     response_list = []
+    # 使用 seen 集合来避免因多周次而返回重复的课程块
+    seen = set()
     for r in results:
+        # 获取聚合的周次信息
+        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        weeks = sorted(set(weeks_map.get(key, [r.week])))
+        week_str = _format_weeks(weeks)
+
         # 获取行政班名称
         admin_class_name = None
         if r.admin_class_id:
@@ -190,19 +206,14 @@ def get_schedule_results(
                 cohort = db.query(CohortModel).filter(CohortModel.id == ac.cohort_id).first()
                 if cohort:
                     admin_class_name = f"{cohort.major}{ac.class_index}班"
-        
+
         # 获取专业年级名称
         cohort_name = None
         if r.cohort_id:
             cohort = db.query(CohortModel).filter(CohortModel.id == r.cohort_id).first()
             if cohort:
                 cohort_name = f"{cohort.major}-{cohort.grade}"
-        
-        # 获取聚合的周次信息
-        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
-        weeks = sorted(set(weeks_map.get(key, [r.week])))
-        week_str = _format_weeks(weeks)
-        
+
         # 获取课程类型
         if r.is_fixed:
             course_type_str = "固定课"
@@ -210,14 +221,14 @@ def get_schedule_results(
             course_type_str = "实验课"
         else:
             course_type_str = "理论课"
-        
+
         response_list.append(ScheduleResultResponse(
             id=r.id,
             session_id=r.session_id,
             teaching_class_id=r.teaching_class_id,
             course_name=r.course_name,
             teacher_name=r.teacher_name,
-            week=r.week,
+            week=r.week, # 保持一个周次以便前端筛选，但用week_str显示
             day=r.day,
             period=r.period,
             duration=r.duration,
@@ -275,7 +286,7 @@ def get_available_slots(
     db: Session = Depends(get_db)
 ):
     """获取指定排课记录可以调整到的所有时间槽，以及每个时间槽的冲突信息
-    
+
     返回按教学班检查的冲突情况，包括：
     - 教师冲突
     - 学生冲突（同一行政班的其他课）
@@ -286,7 +297,7 @@ def get_available_slots(
     result = db.query(ScheduleResult).filter(ScheduleResult.id == result_id).first()
     if not result:
         raise HTTPException(status_code=404, detail="排课记录不存在")
-    
+
     # 获取同一教学班、同一类型（理论/实验）、同一时间槽的所有记录
     # 同一门课的理论课和实验课应该可以独立调整
     tc_results = db.query(ScheduleResult).filter(
@@ -296,15 +307,15 @@ def get_available_slots(
         ScheduleResult.day == result.day,
         ScheduleResult.period == result.period
     ).all()
-    
+
     # 获取该部分的周次列表
     tc_weeks = sorted(set(r.week for r in tc_results))
-    
+
     # 获取该会话的所有排课记录（用于冲突检测）
     all_results = db.query(ScheduleResult).filter(
         ScheduleResult.session_id == result.session_id
     ).all()
-    
+
     # 构建冲突检测索引
     # 教师占用: (teacher_name, week, day, period) -> [course_name]
     teacher_occupied = defaultdict(list)
@@ -312,48 +323,48 @@ def get_available_slots(
     admin_class_occupied = defaultdict(list)
     # 机房占用: (room_name, week, day, period) -> [course_name]
     room_occupied = defaultdict(list)
-    
+
     for r in all_results:
         # 排除当前要调整的记录（同一教学班、同一类型、同一时间槽）
-        if (r.teaching_class_id == result.teaching_class_id and 
+        if (r.teaching_class_id == result.teaching_class_id and
             r.is_lab == result.is_lab and
-            r.day == result.day and 
+            r.day == result.day and
             r.period == result.period):
             continue
-        
+
         for p_offset in range(r.duration):
             period = r.period + p_offset
-            
+
             # 教师占用
             teacher_occupied[(r.teacher_name, r.week, r.day, period)].append(r.course_name)
-            
+
             # 行政班占用
             if r.admin_class_id:
                 admin_class_occupied[(r.admin_class_id, r.week, r.day, period)].append(r.course_name)
-            
+
             # 机房占用
             if r.room_name and r.is_lab:
                 room_occupied[(r.room_name, r.week, r.day, period)].append(r.course_name)
-    
+
     # 获取该教学班涉及的所有行政班
     tc_admin_class_ids = set(r.admin_class_id for r in tc_results if r.admin_class_id)
-    
+
     # 生成所有可能的时间槽
     # 根据课程持续时长动态计算：从第1节到第(12-duration)节都可以作为开始节次
     duration = result.duration
     available_slots = []
-    
+
     for day in range(1, 6):  # 周一到周五
         for period in range(1, 12 - duration + 1):  # 确保课程不超过第11节
-            
+
             conflicts = []
             has_hard_conflict = False
-            
+
             # 检查每个周次的冲突
             for week in tc_weeks:
                 for p_offset in range(duration):
                     p = period + p_offset
-                    
+
                     # 检查教师冲突
                     teacher_key = (result.teacher_name, week, day, p)
                     if teacher_key in teacher_occupied:
@@ -365,7 +376,7 @@ def get_available_slots(
                             'desc': f"第{week}周 教师{result.teacher_name}已有课: {', '.join(teacher_occupied[teacher_key])}"
                         })
                         has_hard_conflict = True
-                    
+
                     # 检查行政班冲突
                     for ac_id in tc_admin_class_ids:
                         ac_key = (ac_id, week, day, p)
@@ -378,7 +389,7 @@ def get_available_slots(
                                 'desc': f"第{week}周 学生已有课: {', '.join(admin_class_occupied[ac_key])}"
                             })
                             has_hard_conflict = True
-                    
+
                     # 检查机房冲突（仅实验课）
                     if result.is_lab and result.room_name:
                         room_key = (result.room_name, week, day, p)
@@ -391,10 +402,10 @@ def get_available_slots(
                                 'desc': f"第{week}周 {result.room_name}已有课: {', '.join(room_occupied[room_key])}"
                             })
                             has_hard_conflict = True
-            
+
             # 跳过当前时间槽
             is_current = (day == result.day and period == result.period)
-            
+
             available_slots.append({
                 'day': day,
                 'day_name': ['周一', '周二', '周三', '周四', '周五'][day - 1],
@@ -404,7 +415,7 @@ def get_available_slots(
                 'has_conflict': has_hard_conflict,
                 'is_current': is_current
             })
-    
+
     return {
         'teaching_class_id': result.teaching_class_id,
         'course_name': result.course_name,
@@ -431,7 +442,7 @@ def adjust_schedule(
     db: Session = Depends(get_db)
 ):
     """将指定排课记录的教学班调整到新的时间槽
-    
+
     Args:
         result_id: 排课记录ID
         new_day: 新的星期几(1-5)
@@ -442,10 +453,10 @@ def adjust_schedule(
     result = db.query(ScheduleResult).filter(ScheduleResult.id == result_id).first()
     if not result:
         raise HTTPException(status_code=404, detail="排课记录不存在")
-    
+
     if result.is_fixed:
         raise HTTPException(status_code=400, detail="固定课不能调整，请在固定课管理中修改")
-    
+
     # 检查冲突（除非强制）
     if not force:
         slots_info = get_available_slots(result_id, db)
@@ -455,10 +466,10 @@ def adjust_schedule(
         )
         if target_slot and target_slot['has_conflict']:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"目标时间槽存在冲突: {'; '.join(c['desc'] for c in target_slot['conflicts'][:3])}"
             )
-    
+
     # 获取同一教学班、同一类型、同一时间槽的所有记录（不同周次）
     tc_results = db.query(ScheduleResult).filter(
         ScheduleResult.session_id == result.session_id,
@@ -467,14 +478,14 @@ def adjust_schedule(
         ScheduleResult.day == result.day,
         ScheduleResult.period == result.period
     ).all()
-    
+
     # 更新所有记录的时间
     for r in tc_results:
         r.day = new_day
         r.period = new_period
-    
+
     db.commit()
-    
+
     return {
         'success': True,
         'message': f"成功将 {result.course_name} 调整到 {['周一','周二','周三','周四','周五'][new_day-1]} 第{new_period}-{new_period + result.duration - 1}节",
@@ -499,7 +510,7 @@ def delete_schedule_result(result_id: int, db: Session = Depends(get_db)):
 @router.get("/export/{session_id}", summary="导出Excel课表")
 def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     """导出排课结果为Excel文件
-    
+
     包含三种视图：
     1. 按行政班的课表 - 方便学生/教务管理员/教师查看班级完整课表
     2. 教学班总览 - 方便教务管理员管理所有教学班，检查冲突
@@ -508,7 +519,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
     from openpyxl.utils import get_column_letter
     from ..dbmodels.db_models import AdminClass
-    
+
     # 验证会话存在
     session = db.query(ScheduleSession).filter(ScheduleSession.session_id == session_id).first()
     if not session:
@@ -524,7 +535,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     admin_classes = db.query(AdminClass).all()
     cohort_map = {c.id: c for c in cohorts}
     admin_class_map = {ac.id: ac for ac in admin_classes}
-    
+
     # 定义样式
     header_font = Font(bold=True, size=11, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -540,16 +551,16 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     theory_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # 浅绿色-理论课
     lab_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")  # 浅蓝色-实验课
     fixed_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # 浅黄色-固定课
-    
+
     # 创建Excel文件
     output = io.BytesIO()
-    
+
     # 星期名称
     day_names = ['星期一', '星期二', '星期三', '星期四', '星期五']
     period_names = [f'第{i}节' for i in range(1, 12)]
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        
+
         # ==================== 1. 按行政班的课表（网格视图） ====================
         # 排序：专业名称正序，年级倒序，班级正序
         sorted_admin_classes = sorted(
@@ -564,14 +575,14 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
             cohort = cohort_map.get(admin_class.cohort_id)
             if not cohort:
                 continue
-            
+
             # 筛选该行政班的课程
             # 注意：固定课已经按admin_class_id正确存储，只需按admin_class_id筛选即可
             class_results = [r for r in results if r.admin_class_id == admin_class.id]
-            
+
             if not class_results:
                 continue
-            
+
             # 聚合数据：按(day, period, course, teacher, ...)分组收集周次
             # key增加teaching_class_id和subgroup_ids以便后续分组
             grid_data = {}
@@ -582,7 +593,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                 if key not in grid_data:
                     grid_data[key] = {'weeks': [], 'id': r.id}
                 grid_data[key]['weeks'].append(r.week)
-            
+
             # 第一步：找出同一门课程的不同教学班
             # 注意：固定课排除在外，因为固定课的teaching_class_id包含时间信息，会被误判为多教学班
             course_name_to_tc_ids = defaultdict(set)
@@ -590,7 +601,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                 d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
                 if not is_fixed:  # 只统计非固定课
                     course_name_to_tc_ids[course].add(tc_id)
-            
+
             # 第二步：找出当前行政班实际涉及的多教学班课程
             multi_tc_courses = []
             for course, tc_id_set in course_name_to_tc_ids.items():
@@ -599,24 +610,24 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                         'course_name': course,
                         'tc_ids': list(tc_id_set)
                     })
-            
+
             # 如果没有多教学班课程，检查时间冲突
             if not multi_tc_courses:
                 # 回退到时间冲突检测逻辑
                 # 注意：只有当两门课的时间槽和周次都有重叠时，才算真正的冲突
                 # 例如：形势与政策（第6-7周）和数据挖掘（第1-5,8-16周）在同一时间段，但周次不重叠，不算冲突
-                
+
                 def weeks_overlap(weeks1, weeks2):
                     """ 检查两个周次列表是否有重叠 """
                     return bool(set(weeks1) & set(weeks2))
-                
+
                 time_slot_map = defaultdict(list)
                 for key in grid_data.keys():
                     d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
                     for period_offset in range(duration):
                         slot = (d, p + period_offset)
                         time_slot_map[slot].append(key)
-                
+
                 # 检测真正的时间冲突（时间槽相同且周次有重叠）
                 conflict_keys = set()
                 for slot, keys in time_slot_map.items():
@@ -629,17 +640,17 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                                 if weeks_overlap(weeks1, weeks2):
                                     conflict_keys.add(k1)
                                     conflict_keys.add(k2)
-                
+
                 non_conflict_keys = [k for k in grid_data.keys() if k not in conflict_keys]
                 conflict_key_list = [k for k in grid_data.keys() if k in conflict_keys]
-                
+
                 # 将有冲突的课程分组（同样要考虑周次重叠）
                 schedule_groups = []
                 for key in conflict_key_list:
                     d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
                     key_slots = set((d, p + offset) for offset in range(duration))
                     key_weeks = set(grid_data[key]['weeks'])
-                    
+
                     placed = False
                     for group in schedule_groups:
                         has_conflict = False
@@ -655,10 +666,10 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                             group.append(key)
                             placed = True
                             break
-                    
+
                     if not placed:
                         schedule_groups.append([key])
-                
+
                 if not schedule_groups:
                     schedule_groups = [list(grid_data.keys())]
                 else:
@@ -666,14 +677,14 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
             else:
                 # 第三步：按子组集合分组（而非笛卡尔积）
                 # 核心思想：子组相同的教学班放在同一张课表
-                
+
                 # 收集所有多教学班课程的teaching_class_id -> subgroup_key映射
                 tc_id_to_subgroup_key = {}
                 for key in grid_data.keys():
                     d, p, course, teacher, is_lab, is_fixed, room, duration, tc_id, sg_key = key
                     if sg_key and tc_id not in tc_id_to_subgroup_key:
                         tc_id_to_subgroup_key[tc_id] = sg_key
-                
+
                 # 找出所有不同的子组集合，并排序以保证顺序一致
                 subgroup_sets_list = []
                 for item in multi_tc_courses:
@@ -683,12 +694,12 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                             subgroup_sets_list.append(sg_key)
                 # 排序以保证与前端顺序一致
                 subgroup_sets_list.sort()
-                
+
                 # 单教学班课程（放到所有课表）
                 # 固定课始终视为单教学班课程
-                single_tc_keys = [k for k in grid_data.keys() 
+                single_tc_keys = [k for k in grid_data.keys()
                                   if k[5] or len(course_name_to_tc_ids.get(k[2], set())) <= 1]  # k[5] is is_fixed
-                
+
                 # 为每个子组集合生成一张课表
                 schedule_groups = []
                 for subgroup_key in subgroup_sets_list:
@@ -700,17 +711,16 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
                             continue
                         if sg_key == subgroup_key:
                             matched_keys.append(key)
-                    
+
                     if matched_keys:
                         schedule_groups.append(single_tc_keys + matched_keys)
-                
+
                 if not schedule_groups:
                     schedule_groups = [list(grid_data.keys())]
-                
+
                 # 第四步：按子组子集关系 + 时间不冲突合并课表组
                 # 合并条件：一个子组集合是另一个的子集，且合并后时间不冲突
-                
-                import re
+
                 # 将subgroup_key转换为数字集合
                 # subgroup_key格式可能是 "1,2,3" 或 "SG_xxx_1,SG_xxx_2,SG_xxx_3"
                 def parse_subgroup_key(key):

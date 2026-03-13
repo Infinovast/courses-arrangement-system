@@ -197,7 +197,7 @@ def evaluate_individual_standalone(individual, generation_info, max_gen, **kwarg
 class DeapScheduler:
     def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences):
         self.MAX_LABS_SIMULTANEOUSLY = 2
-        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 300, 0.9, 0.4, 10
+        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 100, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
         self.tc_to_sg_map, self.fixed_schedule, self.teacher_preferences = tc_to_sg_map, fixed_schedule, teacher_preferences
