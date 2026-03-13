@@ -160,10 +160,11 @@ def get_schedule_results(
 
     all_results = all_results_query.all()
 
-    # 聚合周次信息：按 (teaching_class_id, day, period, admin_class_id) 分组
+    # 聚合周次信息：按 (teaching_class_id, day, period, admin_class_id, is_lab) 分组
+    # MODIFIED: 在key中加入r.is_lab以区分理论课和实验课
     weeks_map = defaultdict(list)
     for r in all_results:
-        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
+        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id, r.is_lab)
         weeks_map[key].append(r.week)
 
     # 如果是查询特定行政班，使用 all_results；否则按周筛选
@@ -190,7 +191,8 @@ def get_schedule_results(
     seen = set()
     for r in results:
         # 获取聚合的周次信息
-        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id)
+        # MODIFIED: 在key中加入r.is_lab以区分理论课和实验课
+        key = (r.teaching_class_id, r.day, r.period, r.admin_class_id, r.is_lab)
         if key in seen:
             continue
         seen.add(key)

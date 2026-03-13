@@ -1,11 +1,18 @@
+# campus_pre_scheduler.py
 import numpy as np
 from collections import defaultdict
 from itertools import cycle, combinations
 import random
+from typing import List
 from models.time_definition import *
 
 
 class CampusScheduler:
+    """
+    校区预排课调度器。
+    主要处理那些有特定时间偏好（周一/周二全天，周三上午）的课程。
+    这是一个启发式、确定性的调度器，旨在为遗传算法提供一个高质量的初始解或固定部分。
+    """
     MAX_LABS_SIMULTANEOUSLY = 2
 
     def __init__(self, campus_tcs: list, all_subgroups: list, all_tc_to_sg_map: dict, teachers: list, rooms: list,
@@ -26,61 +33,80 @@ class CampusScheduler:
         self.lab_rooms = [r for r in rooms if "机房" in r.name]
         self.room_to_idx = {r.id: i for i, r in enumerate(rooms)}
 
-        self.teacher_grid = np.zeros((len(teachers), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=bool)
-        self.subgroup_grid = np.zeros((len(all_subgroups), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=bool)
-        self.lab_usage_grid = np.zeros((len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=np.int8)
-        self.room_grid = np.zeros((len(rooms), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=bool)
+        # 初始化资源占用网格
+        self.teacher_grid = np.zeros((len(teachers), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=np.int32)
+        self.subgroup_grid = np.zeros((len(all_subgroups), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=np.int32)
+        self.lab_usage_grid = np.zeros((len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=np.int32)
+        self.room_grid = np.zeros((len(rooms), len(ALL_WEEKS), len(DAYS), len(PERIODS)), dtype=np.int32)
+
         self.cohort_sgs_map = defaultdict(list)
         for sg in self.all_subgroups:
             self.cohort_sgs_map[sg.cohort.id].append(sg)
         self.teacher_schedule = defaultdict(list)
 
     def _initialize_grids_with_fixed_schedule(self):
+        """
+        [关键修复] 用固定的公共课初始化资源占用网格。
+        增加了适配 Web/单机 两套架构的精确子组索引分配。
+        """
         for item in self.initial_fixed_schedule:
             cohort_id = item.get('cohort_id')
-            if not cohort_id: continue
+            teacher_name = item.get('teacher_name')
+            weeks = item.get('week', [])
+            start_time = item.get('start_time')
+            duration = item.get('duration', 2)
+            is_lab = item.get('is_lab', False)
+            room_name = item.get('room_name')
 
-            teacher_idx = self.teacher_to_idx.get(item['teacher_name'])
-            d_idx, p_start_idx = item['start_time'].day - 1, item['start_time'].period - 1
+            if not weeks or not start_time:
+                continue
 
-            # 【关键修复】先标记教师占用，确保无论 relevant_sgs 是否为空都能正确标记
+            d_idx = start_time.day - 1
+            p_start_idx = start_time.period - 1
+            w_indices = [w - 1 for w in weeks if 1 <= w <= len(ALL_WEEKS)]
+            p_indices = list(range(p_start_idx, p_start_idx + duration))
+
+            if not w_indices or not (0 <= d_idx < len(DAYS)) or not (
+                    0 <= p_start_idx < len(PERIODS) and p_indices[-1] < len(PERIODS)):
+                continue
+
+            # 1. 标记教师占用
+            teacher_idx = self.teacher_to_idx.get(teacher_name)
             if teacher_idx is not None:
-                for w in item['week']:
-                    w_idx = w - 1
-                    if not (0 <= w_idx < len(ALL_WEEKS)): continue
-                    for p_offset in range(item['duration']):
-                        p_idx = p_start_idx + p_offset
-                        if 0 <= d_idx < len(DAYS) and 0 <= p_idx < len(PERIODS):
-                            self.teacher_grid[teacher_idx, w_idx, d_idx, p_idx] = True
+                self.teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] = 1
 
-            sgs = self.cohort_sgs_map.get(cohort_id, [])
-            tag = item.get('group_tag')
-            
-            # 【修复】改进子组匹配逻辑：
-            # 1. 如果没有 group_tag 或 group_tag 是 'default'，标记所有子组
-            # 2. 如果有具体的 group_tag，优先匹配该 tag 的子组
-            # 3. 如果没有匹配到任何子组，回退到标记所有子组
-            if tag and tag != 'default':
-                relevant_sgs = [sg for sg in sgs if sg.fixed_schedule_tag == tag]
-                if not relevant_sgs:
-                    relevant_sgs = sgs
+            # 2. [健壮修复]: 精确打满固定课程占用的子组
+            sg_ids = item.get('subgroup_ids')
+            if sg_ids is not None:
+                sg_indices_to_fill = [self.subgroup_to_idx.get(sg_id) for sg_id in sg_ids if self.subgroup_to_idx.get(sg_id) is not None]
             else:
-                relevant_sgs = sgs
+                sgs = self.cohort_sgs_map.get(cohort_id, [])
+                group_tag = item.get('group_tag', 'default')
+                if group_tag and group_tag != 'default':
+                    relevant_sgs = [sg for sg in sgs if
+                                    hasattr(sg, 'fixed_schedule_tag') and sg.fixed_schedule_tag == group_tag]
+                    if not relevant_sgs:
+                        relevant_sgs = sgs
+                else:
+                    relevant_sgs = sgs
+                sg_indices_to_fill = [self.subgroup_to_idx.get(sg.id) for sg in relevant_sgs if
+                                      self.subgroup_to_idx.get(sg.id) is not None]
 
-            # 标记子组占用
-            for sg in relevant_sgs:
-                sg_idx = self.subgroup_to_idx.get(sg.id)
-                if sg_idx is None: continue
+            if sg_indices_to_fill:
+                self.subgroup_grid[np.ix_(sg_indices_to_fill, w_indices, [d_idx], p_indices)] = 1
 
-                for w in item['week']:
-                    w_idx = w - 1
-                    if not (0 <= w_idx < len(ALL_WEEKS)): continue
-                    for p_offset in range(item['duration']):
-                        p_idx = p_start_idx + p_offset
-                        if 0 <= d_idx < len(DAYS) and 0 <= p_idx < len(PERIODS):
-                            self.subgroup_grid[sg_idx, w_idx, d_idx, p_idx] = True
+            # 3. 标记机房/教室占用
+            if is_lab:
+                self.lab_usage_grid[np.ix_(w_indices, [d_idx], p_indices)] += 1
+                if room_name:
+                    room = next((r for r in self.rooms if r.name == room_name), None)
+                    if room:
+                        room_idx = self.room_to_idx.get(room.id)
+                        if room_idx is not None:
+                            self.room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)] = 1
 
     def schedule(self):
+        """执行排课主流程"""
         self._initialize_grids_with_fixed_schedule()
 
         teacher_hours = defaultdict(int)
@@ -100,12 +126,9 @@ class CampusScheduler:
         for tc in sorted_tcs:
             reqs = tc.course.get_schedule_requirements()
             phase_weeks = tc.get_effective_weeks()
-
-            # 遍历所有 requirement（支持毕业班课程的多个部分，如 theory_makeup_2h, theory_makeup_3h 等）
             for part_key, req_data in reqs.items():
                 req = req_data.copy()
                 req['phase_weeks'] = phase_weeks
-                # 判断是否为实验课
                 is_lab = 'lab' in part_key
                 all_tasks.append({'tc': tc, 'req': req, 'is_lab': is_lab, 'id': (tc.id, part_key)})
 
@@ -142,16 +165,14 @@ class CampusScheduler:
             'weeks_5_to_17': WEEKS_5_TO_17, 'weeks_6_to_17': WEEKS_6_TO_17,
             'weeks_1_to_8': WEEKS_1_TO_8, 'weeks_9_to_16': WEEKS_9_TO_16,
             'weeks_16_to_17': WEEKS_16_TO_17,
-            # 毕业班特殊模式
-            'graduation_48h': WEEKS_5_TO_16,  # 48学时: 第5-16周
-            'graduation_32h_main': WEEKS_5_TO_15,  # 32学时主体: 第5-15周
+            'graduation_48h': WEEKS_5_TO_16,
+            'graduation_32h_main': WEEKS_5_TO_15,
         }
         for task in tasks:
             pattern = task['tc'].course.preferred_pattern
             weeks_options = week_pattern_map.get(pattern, [])
             phase_weeks = task['req'].get('phase_weeks', [])
 
-            # 关键修复：取模式周次和阶段周次的交集
             if phase_weeks:
                 phase_week_set = set(phase_weeks)
                 weeks_options = [w for w in weeks_options if w in phase_week_set]
@@ -206,7 +227,6 @@ class CampusScheduler:
                 phase_weeks = task['req'].get('phase_weeks', [])
                 weeks = next(sg_week_cycle[sg_id])
 
-                # 关键修复：过滤单双周中的阶段周次
                 if phase_weeks:
                     phase_week_set = set(phase_weeks)
                     weeks = [w for w in weeks if w in phase_week_set]
@@ -252,7 +272,6 @@ class CampusScheduler:
             for slot in slots:
                 if task['id'] in placed_task_ids: break
 
-                # 过滤单周中的阶段周次
                 single_weeks_filtered = [w for w in SINGLE_WEEKS if w in phase_week_set]
                 conflicts_single = self._check_conflict_vectorized(task, slot, single_weeks_filtered)
                 if len(conflicts_single) == len(single_weeks_filtered):
@@ -269,7 +288,6 @@ class CampusScheduler:
                         placed_task_ids.add(task['id'])
                         continue
 
-                # 过滤双周中的阶段周次
                 double_weeks_filtered = [w for w in DOUBLE_WEEKS if w in phase_week_set]
                 conflicts_double = self._check_conflict_vectorized(task, slot, double_weeks_filtered)
                 if len(conflicts_double) == len(double_weeks_filtered):
@@ -287,40 +305,35 @@ class CampusScheduler:
                         continue
 
     def _schedule_48h_plus_tasks(self, tasks, successful_placements, placed_task_ids):
-        # 毕业班课程周次模式映射
         graduation_week_pattern_map = {
             'graduation_48h': WEEKS_5_TO_16,
             'graduation_32h_main': WEEKS_5_TO_15,
             'weeks_16_to_17': WEEKS_16_TO_17,
         }
-        
+
         tasks_to_process = list(tasks)
 
         for task in tasks_to_process:
-            if task['id'] in placed_task_ids:
-                continue
+            if task['id'] in placed_task_ids: continue
 
             duration = task['req']['hours_per_block']
             phase_weeks = task['req'].get('phase_weeks', [])
             pattern = task['req'].get('pattern', 'weekly')
             weekly_sessions = task['req'].get('weekly_sessions', 1)
-            
-            # 根据 pattern 选择基础周次
+
             base_weeks = graduation_week_pattern_map.get(pattern, SEMESTER_WEEKS)
 
-            # 关键修复：过滤48学时课程的阶段周次
             if phase_weeks:
                 phase_week_set = set(phase_weeks)
                 base_weeks = [w for w in base_weeks if w in phase_week_set]
-            if not base_weeks:
-                continue
+            if not base_weeks: continue
 
-            # 毕业班48学时课程: 每周2次课
             if weekly_sessions == 2:
-                if self._try_place_task_multiple_sessions(task, base_weeks, duration, 2, successful_placements, placed_task_ids):
+                if self._try_place_task_multiple_sessions(task, base_weeks, duration, 2, successful_placements,
+                                                          placed_task_ids):
                     continue
             elif self._try_place_task(task, [base_weeks], duration, successful_placements,
-                                    placed_task_ids):
+                                      placed_task_ids):
                 continue
 
             placements_with_makeup = self._find_fit_with_makeup(task, duration, base_weeks)
@@ -344,18 +357,10 @@ class CampusScheduler:
                                              placed_task_ids)
 
     def _schedule_48h_dynamic_split(self, tasks, successful_placements, placed_task_ids):
-        """48学时课程动态拆分模式
-        
-        策略顺序：
-        1. 策略3: 动态拆分模式 (单周4学时/双周2学时 或 单周2学时/双周4学时)
-        2. 策略4: 轮替策略 (每3周一个周期，按(1,1,2)/(1,2,1)/(2,1,1)轮替)
-        """
-        # 用于策略4的轮替模式分配
         sg_pattern_cycle = defaultdict(lambda: cycle([(1, 1, 2), (1, 2, 1), (2, 1, 1)]))
-        
+
         for task in tasks:
-            if task['id'] in placed_task_ids:
-                continue
+            if task['id'] in placed_task_ids: continue
 
             phase_weeks = task['req'].get('phase_weeks', [])
             phase_week_set = set(phase_weeks) if phase_weeks else set(ALL_WEEKS)
@@ -364,7 +369,6 @@ class CampusScheduler:
             if not single_week_filtered and not double_week_filtered:
                 continue
 
-            # 策略3: 动态拆分模式
             single_week_density = self._calculate_schedule_density(task, single_week_filtered)
             double_week_density = self._calculate_schedule_density(task, double_week_filtered)
 
@@ -386,54 +390,38 @@ class CampusScheduler:
                     placed_task_ids.add(task['id'])
                     placed = True
                     break
-            
-            if placed:
-                continue
-                
-            # 策略4: 轮替策略 - 当策略3失败时尝试
-            # 根据子组获取轮替模式
+
+            if placed: continue
+
             sg_id = frozenset(sg.id for sg in task['tc'].subgroups) if task['tc'].subgroups else frozenset()
             session_count_pattern = next(sg_pattern_cycle[sg_id])
-            
+
             placements = self._try_place_48h_interleaved_strategy4(task, session_count_pattern)
             if placements:
                 for p in placements:
                     self._commit_placement(p)
                     successful_placements.append(p)
                 placed_task_ids.add(task['id'])
-    
+
     def _try_place_48h_interleaved_strategy4(self, task, session_count_pattern):
-        """策略4: 轮替策略实现
-        
-        规则:
-        - 第1-15周内采用轮替策略，每隔3周上2次连上2节的课
-        - 第17周上2次课，连上3节
-        - 其他周(含第16周)每周上1次连上2节的课
-        
-        session_count_pattern: (1,1,2) / (1,2,1) / (2,1,1)
-        - (1,1,2) 表示第1周和第2周每周上1次，第3周上2次
-        - (1,2,1) 表示第1周和第3周每周上1次，第2周上2次
-        - (2,1,1) 表示第1周上2次，第2周和第3周每周上1次
-        """
         slots = self._get_valid_slots(duration=2, teacher_name=task['tc'].teacher_name)
         random.shuffle(slots)
-        
-        # 需要找到2个时间槽用于常规排课
+
         for s1, s2 in combinations(slots, 2):
             temp_grids = (
-                self.teacher_grid.copy(), 
-                self.subgroup_grid.copy(), 
+                self.teacher_grid.copy(),
+                self.subgroup_grid.copy(),
                 self.lab_usage_grid.copy(),
                 self.room_grid.copy()
             )
-            
+
             success, new_placements = self._check_interleaved_pattern_fit(
                 task, session_count_pattern, s1, s2, temp_grids
             )
-            
+
             if success:
                 return new_placements
-        
+
         return []
 
     def _try_place_48h_interleaved_randomized(self, task, pattern, phase_week_set):
@@ -442,7 +430,6 @@ class CampusScheduler:
         weeks_for_2_sessions = SINGLE_WEEKS if sessions_single == 2 else DOUBLE_WEEKS
         weeks_for_1_session = DOUBLE_WEEKS if sessions_double == 1 else SINGLE_WEEKS
 
-        # 过滤阶段周次
         weeks_for_2_filtered = [w for w in weeks_for_2_sessions if w in phase_week_set]
         weeks_for_1_filtered = [w for w in weeks_for_1_session if w in phase_week_set]
         if not weeks_for_2_filtered or not weeks_for_1_filtered:
@@ -488,10 +475,8 @@ class CampusScheduler:
 
         return []
 
-    # 以下方法保持不变
     def _calculate_schedule_density(self, task, weeks: List[int]) -> int:
-        if not weeks:
-            return 0
+        if not weeks: return 0
 
         tc = task['tc']
         teacher_idx = self.teacher_to_idx.get(tc.teacher_name)
@@ -582,66 +567,55 @@ class CampusScheduler:
         if task['id'] in placed_task_ids: return True
 
         for weeks in weeks_options:
-            if not weeks:
-                continue
+            if not weeks: continue
             slots = self._get_valid_slots(duration, teacher_name=task['tc'].teacher_name, **kwargs)
             for slot in slots:
-                if not self._check_conflict_vectorized(task, slot, weeks):
-                    room_name = self._find_available_lab_room(task, slot, weeks)
-                    if task['is_lab'] and room_name is None:
-                        continue
+                if self._check_conflict_vectorized(task, slot, weeks):
+                    continue
 
-                    p = {'task': task, 'slot': slot, 'weeks': weeks, 'duration': duration, 'room_name': room_name}
-                    self._commit_placement(p)
-                    successful_placements.append(p)
-                    placed_task_ids.add(task['id'])
-                    return True
+                room_name = self._find_available_lab_room(task, slot, weeks)
+                if task['is_lab'] and room_name is None:
+                    continue
+
+                p = {'task': task, 'slot': slot, 'weeks': weeks, 'duration': duration, 'room_name': room_name}
+                self._commit_placement(p)
+                successful_placements.append(p)
+                placed_task_ids.add(task['id'])
+                return True
         return False
 
-    def _try_place_task_multiple_sessions(self, task, weeks, duration, sessions_per_week, successful_placements, placed_task_ids):
-        """处理每周多次课的情况（如毕业班48学时课程，每周2次）"""
-        if task['id'] in placed_task_ids:
-            return True
-        
-        if not weeks:
-            return False
-        
+    def _try_place_task_multiple_sessions(self, task, weeks, duration, sessions_per_week, successful_placements,
+                                          placed_task_ids):
+        if task['id'] in placed_task_ids: return True
+        if not weeks: return False
+
         slots = self._get_valid_slots(duration, teacher_name=task['tc'].teacher_name)
-        
-        # 尝试找到sessions_per_week个不冲突的时间槽
-        from itertools import combinations
+
         for slot_combo in combinations(slots, sessions_per_week):
             all_valid = True
             placements_to_commit = []
-            
-            # 检查所有时间槽是否都不冲突
+
             for slot in slot_combo:
-                conflicts = self._check_conflict_vectorized(task, slot, weeks)
-                if conflicts:
+                if self._check_conflict_vectorized(task, slot, weeks):
                     all_valid = False
                     break
-                
+
                 room_name = self._find_available_lab_room(task, slot, weeks)
                 if task['is_lab'] and room_name is None:
                     all_valid = False
                     break
-                
+
                 placements_to_commit.append({
-                    'task': task, 
-                    'slot': slot, 
-                    'weeks': weeks, 
-                    'duration': duration, 
-                    'room_name': room_name
+                    'task': task, 'slot': slot, 'weeks': weeks,
+                    'duration': duration, 'room_name': room_name
                 })
-            
-            if all_valid and len(placements_to_commit) == sessions_per_week:
-                # 提交所有安排
+
+            if all_valid:
                 for p in placements_to_commit:
                     self._commit_placement(p)
                     successful_placements.append(p)
                 placed_task_ids.add(task['id'])
                 return True
-        
         return False
 
     def _find_fit_with_makeup(self, task, duration, target_weeks, **kwargs):
@@ -738,23 +712,40 @@ class CampusScheduler:
 
     def _check_conflict_vectorized(self, task, slot: TimeSlot, weeks: List[int]):
         tc, is_lab = task['tc'], task['is_lab']
-        if not tc.subgroups: return weeks
+        if not weeks:
+            return []
+
         teacher_idx = self.teacher_to_idx.get(tc.teacher_name)
-        sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in tc.subgroups]
+        sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in tc.subgroups if sg.id in self.subgroup_to_idx]
+
+        if not tc.subgroups:
+            sg_indices = []
+
         d_idx, p_start_idx = slot.day - 1, slot.period - 1
-        if not weeks: return []
         w_indices = [w - 1 for w in weeks]
         p_indices = list(range(p_start_idx, p_start_idx + slot.duration))
+
+        if not (0 <= d_idx < len(DAYS) and 0 <= p_start_idx < len(PERIODS) and p_indices[-1] < len(PERIODS)):
+            return weeks
+
         all_conflicting_weeks = set()
+        w_indices_np = np.array(w_indices)
+
         if teacher_idx is not None:
-            teacher_slice = self.teacher_grid[teacher_idx, w_indices, d_idx, :][:, p_indices]
-            conflict_per_week_mask = np.any(teacher_slice, axis=1)
-            for i, has_conflict in enumerate(conflict_per_week_mask):
-                if has_conflict: all_conflicting_weeks.add(weeks[i])
+            teacher_slice = self.teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)]
+            conflict_mask = np.any(teacher_slice > 0, axis=(0, 2, 3)).flatten()
+            all_conflicting_weeks.update(w_indices_np[conflict_mask] + 1)
+
         if sg_indices:
-            for i, w_idx in enumerate(w_indices):
-                week_slice = self.subgroup_grid[sg_indices, w_idx, d_idx, :][:, p_indices]
-                if np.any(week_slice): all_conflicting_weeks.add(weeks[i])
+            subgroup_slice = self.subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)]
+            conflict_mask = np.any(subgroup_slice > 0, axis=(0, 2, 3)).flatten()
+            all_conflicting_weeks.update(w_indices_np[conflict_mask] + 1)
+
+        if is_lab:
+            lab_slice = self.lab_usage_grid[np.ix_(w_indices, [d_idx], p_indices)]
+            conflict_mask = np.any(lab_slice >= self.MAX_LABS_SIMULTANEOUSLY, axis=(1, 2)).flatten()
+            all_conflicting_weeks.update(w_indices_np[conflict_mask] + 1)
+
         return sorted(list(all_conflicting_weeks))
 
     def _check_conflict_on_temp_grid(self, task, slot, weeks, teacher_grid, subgroup_grid, lab_usage_grid,
@@ -768,11 +759,11 @@ class CampusScheduler:
         p_indices = list(range(p_start_idx, p_start_idx + slot.duration))
 
         if teacher_idx is not None:
-            if np.any(teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)]):
+            if np.any(teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] > 0):
                 return True
 
         if sg_indices:
-            if np.any(subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)]):
+            if np.any(subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)] > 0):
                 return True
 
         if is_lab:
@@ -783,7 +774,7 @@ class CampusScheduler:
             for room in self.lab_rooms:
                 room_idx = self.room_to_idx.get(room.id)
                 if room_idx is not None:
-                    if not np.any(room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)]):
+                    if not np.any(room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)] > 0):
                         can_find_room = True
                         break
             if not can_find_room:
@@ -794,7 +785,6 @@ class CampusScheduler:
     def _find_available_lab_room(self, task, slot, weeks):
         if not task['is_lab']:
             return "N/A"
-
         if not weeks:
             return None
 
@@ -813,36 +803,38 @@ class CampusScheduler:
             if room_idx is None:
                 continue
             room_slice = self.room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)]
-            if not np.any(room_slice):
+            if not np.any(room_slice > 0):
                 return room.name
 
         return None
 
     def _commit_placement(self, p):
-        self._commit_to_grid(p, self.teacher_grid, self.subgroup_grid, self.lab_usage_grid)
-        if self.teacher_to_idx.get(p['task']['tc'].teacher_name) is not None: self.teacher_schedule[
-            p['task']['tc'].teacher_name].append((p['slot'], p['weeks']))
+        self._commit_to_grid(p, self.teacher_grid, self.subgroup_grid, self.lab_usage_grid, self.room_grid)
+        if self.teacher_to_idx.get(p['task']['tc'].teacher_name) is not None:
+            self.teacher_schedule[p['task']['tc'].teacher_name].append((p['slot'], p['weeks']))
 
-    def _commit_to_grid(self, p, teacher_grid, subgroup_grid, lab_grid):
+    def _commit_to_grid(self, p, teacher_grid, subgroup_grid, lab_grid, room_grid_ref):
         task, slot, weeks, room_name = p['task'], p['slot'], p['weeks'], p['room_name']
         tc, is_lab = task['tc'], task['is_lab']
         teacher_idx = self.teacher_to_idx.get(tc.teacher_name)
-        sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in tc.subgroups]
+        sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in tc.subgroups if sg.id in self.subgroup_to_idx]
         d_idx, p_start_idx = slot.day - 1, slot.period - 1
-        w_indices = [w - 1 for w in weeks]
+        w_indices = [w - 1 for w in weeks if 1 <= w <= len(ALL_WEEKS)]
         p_indices = list(range(p_start_idx, p_start_idx + slot.duration))
 
-        if teacher_idx is not None: teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] = True
-        if sg_indices: subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)] = True
+        if not w_indices or d_idx < 0 or d_idx >= len(DAYS) or p_start_idx < 0 or p_indices[-1] >= len(PERIODS):
+            return
 
+        if teacher_idx is not None:
+            teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] += 1
+        if sg_indices:
+            subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)] += 1
         if is_lab:
             lab_grid[np.ix_(w_indices, [d_idx], p_indices)] += 1
-
-            room = next((r for r in self.rooms if r.name == room_name), None)
-            if room:
-                room_idx = self.room_to_idx.get(room.id)
+            if room_name and room_name != "N/A":
+                room_idx = self.room_to_idx.get(next((r.id for r in self.rooms if r.name == room_name), None))
                 if room_idx is not None:
-                    self.room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)] = True
+                    room_grid_ref[np.ix_([room_idx], w_indices, [d_idx], p_indices)] += 1
 
     def _commit_to_temp_grid(self, p, teacher_grid, subgroup_grid, lab_usage_grid, room_grid):
         task, slot, weeks, room_name = p['task'], p['slot'], p['weeks'], p['room_name']
@@ -850,67 +842,62 @@ class CampusScheduler:
         teacher_idx = self.teacher_to_idx.get(tc.teacher_name)
         sg_indices = [self.subgroup_to_idx.get(sg.id) for sg in tc.subgroups if sg.id in self.subgroup_to_idx]
         d_idx, p_start_idx = slot.day - 1, slot.period - 1
-        w_indices = [w - 1 for w in weeks]
+        w_indices = [w - 1 for w in weeks if 1 <= w <= len(ALL_WEEKS)]
         p_indices = list(range(p_start_idx, p_start_idx + slot.duration))
 
-        if teacher_idx is not None: teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] = True
-        if sg_indices: subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)] = True
+        if not w_indices or d_idx < 0 or d_idx >= len(DAYS) or p_start_idx < 0 or p_indices[-1] >= len(PERIODS):
+            return
 
+        if teacher_idx is not None:
+            teacher_grid[np.ix_([teacher_idx], w_indices, [d_idx], p_indices)] += 1
+        if sg_indices:
+            subgroup_grid[np.ix_(sg_indices, w_indices, [d_idx], p_indices)] += 1
         if is_lab:
             lab_usage_grid[np.ix_(w_indices, [d_idx], p_indices)] += 1
-            room = next((r for r in self.rooms if r.name == room_name), None)
-            if room:
-                room_idx = self.room_to_idx.get(room.id)
+            if room_name and room_name != "N/A":
+                room_idx = self.room_to_idx.get(next((r.id for r in self.rooms if r.name == room_name), None))
                 if room_idx is not None:
-                    room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)] = True
+                    room_grid[np.ix_([room_idx], w_indices, [d_idx], p_indices)] += 1
 
     def _format_results(self, placements):
         detailed, fixed = [], []
         agg = defaultdict(list)
-        for p in placements: key = (p['task']['tc'].id, p['task']['is_lab'], p['slot'], p.get('room_name')); agg[
-            key].extend(p['weeks'])
+        for p in placements:
+            key = (p['task']['tc'].id, p['task']['is_lab'], p['slot'], p.get('room_name'))
+            agg[key].extend(p['weeks'])
+
         for key, weeks_list in agg.items():
             tc_id, is_lab, slot, room_name = key
             tc = next((p['task']['tc'] for p in placements if p['task']['tc'].id == tc_id), None)
             if not tc: continue
-            # 转numpy类型为Python原生类型
+
             all_weeks = sorted([int(w) for w in set(weeks_list)])
             if not all_weeks: continue
-            day_val = int(slot.day)
-            period_val = int(slot.period)
-            duration_val = int(slot.duration)
+            day_val, period_val, duration_val = int(slot.day), int(slot.period), int(slot.duration)
+
             for sg in tc.subgroups:
-                fixed.append(
-                    {"cohort_id": sg.cohort.id, "group_tag": sg.fixed_schedule_tag, "course_name": tc.course.name,
-                     "teacher_name": tc.teacher_name, "duration": duration_val, "week": all_weeks,
-                     "start_time": TimePoint(week=None, day=day_val, period=period_val), "is_lab": bool(is_lab),
-                     "room_name": room_name if is_lab else None})
+                fixed.append({
+                    "cohort_id": sg.cohort.id, "group_tag": sg.fixed_schedule_tag, "course_name": tc.course.name,
+                    "teacher_name": tc.teacher_name, "duration": duration_val, "week": all_weeks,
+                    "start_time": TimePoint(week=None, day=day_val, period=period_val), "is_lab": bool(is_lab),
+                    "room_name": room_name if is_lab else None
+                })
             for w in all_weeks:
-                detailed.append(
-                    {"teaching_class_id": tc.id, "course_name": tc.course.name, "teacher_name": tc.teacher_name,
-                     "time_point": TimePoint(week=w, day=day_val, period=period_val), "duration": duration_val,
-                     "room_name": room_name if room_name != "N/A" else None, "is_lab": bool(is_lab),
-                     "is_combined": bool(tc.is_combined)})
+                detailed.append({
+                    "teaching_class_id": tc.id, "course_name": tc.course.name, "teacher_name": tc.teacher_name,
+                    "time_point": TimePoint(week=w, day=day_val, period=period_val), "duration": duration_val,
+                    "room_name": room_name if room_name != "N/A" else None, "is_lab": bool(is_lab),
+                    "is_combined": bool(tc.is_combined)
+                })
         return detailed, fixed
-    
+
     def cleanup(self):
-        """清理资源，释放内存"""
-        # 清理大型 numpy 数组
-        if hasattr(self, 'teacher_grid'):
-            del self.teacher_grid
-        if hasattr(self, 'subgroup_grid'):
-            del self.subgroup_grid
-        if hasattr(self, 'lab_usage_grid'):
-            del self.lab_usage_grid
-        if hasattr(self, 'room_grid'):
-            del self.room_grid
-        # 清理其他引用
-        if hasattr(self, 'all_tcs_to_schedule'):
-            self.all_tcs_to_schedule.clear()
-        if hasattr(self, 'teacher_schedule'):
-            self.teacher_schedule.clear()
-        if hasattr(self, 'cohort_sgs_map'):
-            self.cohort_sgs_map.clear()
-        # 强制垃圾回收
+        if hasattr(self, 'teacher_grid'): del self.teacher_grid
+        if hasattr(self, 'subgroup_grid'): del self.subgroup_grid
+        if hasattr(self, 'lab_usage_grid'): del self.lab_usage_grid
+        if hasattr(self, 'room_grid'): del self.room_grid
+        if hasattr(self, 'all_tcs_to_schedule'): self.all_tcs_to_schedule.clear()
+        if hasattr(self, 'teacher_schedule'): self.teacher_schedule.clear()
+        if hasattr(self, 'cohort_sgs_map'): self.cohort_sgs_map.clear()
         import gc
         gc.collect()
