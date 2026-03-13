@@ -1,4 +1,4 @@
-# deap_scheduler.py (已修复固定课程处理逻辑及变量覆写致盲问题)
+# deap_scheduler.py (已修复固定课程致盲问题、机房脱靶问题以及同一周多次课被错误惩罚问题)
 
 import random
 from collections import defaultdict
@@ -159,7 +159,6 @@ class DeapScheduler:
         self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 100, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
-        # [极度危急的修复]: 以前被误写为 fixed_schedule, fixed_schedule 使得对象丢失
         self.tc_to_sg_map, self.fixed_schedule, self.teacher_preferences = tc_to_sg_map, fixed_schedule, teacher_preferences
 
         self._prepare_mappings()
@@ -186,7 +185,9 @@ class DeapScheduler:
                 for session_idx in range(weekly_sessions):
                     task_req = req.copy()
                     task_req['session_idx'] = session_idx
-                    task_req['time_consistency_group_key'] = tc.id
+                    # 【核心修复】：细化时间一致性分组的粒度。
+                    # 以确保“同周的一周多次课”之间不再因为时间不同被错误触发巨额惩罚！
+                    task_req['time_consistency_group_key'] = f"{tc.id}_{part_key}_{session_idx}"
                     self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': task_req})
 
     def _prepare_jit_parameters(self):
@@ -242,7 +243,6 @@ class DeapScheduler:
             p_indices = list(range(p_start_idx, p_start_idx + dur))
             if not w_indices or not p_indices: continue
 
-            # [重要健壮性修补]: 融合对精准子组分配 `subgroup_ids` 的理解
             sg_ids = item.get('subgroup_ids')
             if sg_ids is not None:
                 relevant_sgs = [sg for sg in self.subgroups if sg.id in sg_ids]
@@ -435,9 +435,6 @@ class DeapScheduler:
             creator.create("Individual", list, fitness=creator.FitnessMin)
         self.toolbox = base.Toolbox()
 
-        # [严重Bug修复]：当所有可选时段都被强行挤占（固定课太满等情况），
-        # 应该随机生成一个时段作为基因，并利用强力的惩罚把它顶开，
-        # 而绝不能被迫默认返回 0（硬编码在了周一 1-2节）从而陷入无法进化的死锁！
         self.toolbox.register("individual_generator", lambda: [
             random.choice(self.task_to_valid_slots[i]) if i < len(self.task_to_valid_slots) and
                                                           self.task_to_valid_slots[i].size > 0
