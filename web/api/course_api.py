@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Any, Dict
 
 from ..core.database import get_db
-from ..models.db_models import Course, Cohort, Teacher, TeacherPreference, FixedSchedule
+from ..dbmodels.db_models import Course, Cohort, Teacher, TeacherPreference, FixedSchedule
 from ..schemas.schemas import (
     CourseCreate, CourseUpdate, CourseResponse, CourseWithDetails,
     TeacherPreferenceCreate, TeacherPreferenceResponse,

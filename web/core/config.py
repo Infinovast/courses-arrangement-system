@@ -5,9 +5,9 @@ from typing import Optional
 class Settings(BaseSettings):
     # 数据库配置
     DATABASE_HOST: str = "localhost"
-    DATABASE_PORT: int = 5433
+    DATABASE_PORT: int = 5432
     DATABASE_USER: str = "postgres"
-    DATABASE_PASSWORD: str = "1478963a"
+    DATABASE_PASSWORD: str = "123456"
     DATABASE_NAME: str = "paike_db"
 
     # API配置

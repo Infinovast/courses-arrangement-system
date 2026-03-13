@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from ..core.database import get_db
-from ..models.db_models import Cohort, AdminClass
+from ..dbmodels.db_models import Cohort, AdminClass
 from ..schemas.schemas import (
     CohortCreate, CohortUpdate, CohortResponse, CohortWithClasses,
     AdminClassCreate, AdminClassUpdate, AdminClassResponse

@@ -13,26 +13,68 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Set
 from collections import defaultdict
 import multiprocessing
+import importlib.util
 
 from sqlalchemy.orm import Session
 
-# 添加父目录到路径以导入原有模块
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from models.time_definition import TimePoint, SEMESTER_WEEKS
-from models.course import Course as AlgoCourse
-from models.class_group import Cohort as AlgoCohort, AdminClass as AlgoAdminClass
-from models.teacher import Teacher as AlgoTeacher
-from models.room import Room as AlgoRoom
-from data_processor import DataPreprocessor
-from campus_pre_scheduler import CampusScheduler
-from deap_scheduler import DeapScheduler
-
-from ..models.db_models import (
+# 先导入数据库模型（相对导入）
+from ..dbmodels.db_models import (
     Cohort, AdminClass, Teacher, Course, Room,
     ScheduleResult, ScheduleSession, FixedSchedule,
     SubgroupAssignment, TeacherPreference, CombinedCourseGroup
 )
+
+# 排课算法模块的根目录
+_algo_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _load_algo_module(module_name: str, file_name: str = None):
+    """动态加载排课算法模块"""
+    if file_name is None:
+        file_name = f"{module_name}.py"
+    
+    # 处理嵌套模块路径 (e.g., "models.time_definition" -> "models/time_definition.py")
+    if '.' in module_name:
+        parts = module_name.split('.')
+        file_path = os.path.join(_algo_path, *parts[:-1], f"{parts[-1]}.py")
+    else:
+        file_path = os.path.join(_algo_path, file_name)
+    
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# 导入排课算法模块
+_time_def_module = _load_algo_module("models.time_definition")
+TimePoint = _time_def_module.TimePoint
+SEMESTER_WEEKS = _time_def_module.SEMESTER_WEEKS
+AFTERNOOM_PERIODS = _time_def_module.AFTERNOOM_PERIODS
+EVENING_PERIODS = _time_def_module.EVENING_PERIODS
+
+_course_module = _load_algo_module("models.course")
+AlgoCourse = _course_module.Course
+
+_teacher_module = _load_algo_module("models.teacher")
+AlgoTeacher = _teacher_module.Teacher
+
+_class_group_module = _load_algo_module("models.class_group")
+AlgoCohort = _class_group_module.Cohort
+AlgoAdminClass = _class_group_module.AdminClass
+
+_room_module = _load_algo_module("models.room")
+AlgoRoom = _room_module.Room
+
+_data_processor_module = _load_algo_module("data_processor")
+DataPreprocessor = _data_processor_module.DataPreprocessor
+
+_campus_scheduler_module = _load_algo_module("campus_pre_scheduler")
+CampusScheduler = _campus_scheduler_module.CampusScheduler
+
+_deap_scheduler_module = _load_algo_module("deap_scheduler")
+DeapScheduler = _deap_scheduler_module.DeapScheduler
 
 
 class ScheduleService:
@@ -266,7 +308,7 @@ class ScheduleService:
         # 首先为校本部教师添加默认偏好
         for t in teachers_list:
             if t.is_campus_teacher:
-                from models.time_definition import AFTERNOOM_PERIODS, EVENING_PERIODS
+                # AFTERNOOM_PERIODS 和 EVENING_PERIODS 已在文件顶部通过 _load_algo_module 导入
                 teacher_preferences.append({
                     'teacher_name': t.name,
                     'course_name': None,

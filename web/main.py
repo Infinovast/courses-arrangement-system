@@ -55,7 +55,7 @@ app.add_middleware(
 def startup_event():
     """启动时初始化数据库表"""
     # 导入所有模型确保它们被注册
-    from .models import db_models
+    from .dbmodels import db_models
     Base.metadata.create_all(bind=engine)
     print("数据库表初始化完成")
 

@@ -294,6 +294,7 @@ class ScheduleSessionResponse(BaseModel):
     message: Optional[str] = None
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    cohort_ids: List[int] = Field(default=[], description="该会话涉及的所有专业年级ID")
 
     class Config:
         from_attributes = True

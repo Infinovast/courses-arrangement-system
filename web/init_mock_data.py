@@ -1,13 +1,20 @@
 """
 模拟数据初始化脚本
 用于填充测试数据到数据库
+
+使用方法:
+    cd C:/project/python/danzi/2/paike/paike
+    python -m web.init_mock_data
 """
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from web.core.database import SessionLocal, engine, Base
-from web.models.db_models import Cohort, AdminClass, Teacher, Room, Course, CombinedCourseGroup, FixedSchedule
+from web.dbmodels.db_models import (
+    Cohort, AdminClass, Teacher, Room, Course, 
+    CombinedCourseGroup, FixedSchedule, TeacherPreference
+)
 
 def init_mock_data():
     """初始化模拟数据（先删除旧表，再重新建表并插入数据）"""
@@ -19,17 +26,7 @@ def init_mock_data():
     db = SessionLocal()
     
     try:
-        # 清空现有数据
-        db.query(Course).delete()
-        db.query(CombinedCourseGroup).delete()
-        db.query(FixedSchedule).delete()
-        db.query(AdminClass).delete()
-        db.query(Cohort).delete()
-        db.query(Teacher).delete()
-        db.query(Room).delete()
-        db.commit()
-        
-        print("已清空现有数据...")
+        print("已清空现有数据，开始创建新数据...")
         
         # ==================== 专业年级 ====================
         cohorts_data = [
@@ -55,9 +52,11 @@ def init_mock_data():
         
         # ==================== 行政班 ====================
         admin_classes = []
+        admin_classes_by_cohort = {}  # cohort_id -> [admin_class, ...]
         for cohort in cohorts:
             # 每个专业年级创建3-4个班
             class_count = 4 if "计算机" in cohort.major else 3
+            admin_classes_by_cohort[cohort.id] = []
             for i in range(1, class_count + 1):
                 ac = AdminClass(
                     cohort_id=cohort.id,
@@ -66,7 +65,12 @@ def init_mock_data():
                 )
                 db.add(ac)
                 admin_classes.append(ac)
+                admin_classes_by_cohort[cohort.id].append(ac)
         db.commit()
+        
+        # 刷新获取ID
+        for ac in admin_classes:
+            db.refresh(ac)
         print(f"已创建 {len(admin_classes)} 个行政班")
         
         # ==================== 教师 ====================
@@ -103,6 +107,36 @@ def init_mock_data():
         for t in teachers:
             db.refresh(t)
         
+        # ==================== 教师时间偏好 ====================
+        # 为校本部教师设置偏好（周一至周三上午优先，周四周五及下午不希望）
+        preferences_count = 0
+        for t in teachers:
+            if t.is_campus_teacher:
+                # 偏好: 周一至周三的1-4节
+                preferred = []
+                for day in [1, 2, 3]:
+                    for period in [1, 2, 3, 4]:
+                        preferred.append([day, period])
+                
+                # 不希望: 周四周五，以及下午5-8节
+                undesired = []
+                for day in [4, 5]:
+                    for period in range(1, 12):
+                        undesired.append([day, period])
+                for day in [1, 2, 3]:
+                    for period in [5, 6, 7, 8]:
+                        undesired.append([day, period])
+                
+                pref = TeacherPreference(
+                    teacher_id=t.id,
+                    preferred_slots=preferred,
+                    undesired_slots=undesired
+                )
+                db.add(pref)
+                preferences_count += 1
+        db.commit()
+        print(f"已创建 {preferences_count} 条教师时间偏好")
+        
         # ==================== 机房 ====================
         rooms_data = [
             {"name": "机房101", "capacity": 50},
@@ -126,7 +160,6 @@ def init_mock_data():
         print(f"已创建 {len(rooms)} 个机房")
         
         # ==================== 合班课程组 ====================
-        # 创建合班课程组（跨专业合班）
         combined_group1 = CombinedCourseGroup(
             name="数字逻辑电路合班组",
             description="数据科学与人工智能专业合班上课"
@@ -137,96 +170,89 @@ def init_mock_data():
         print(f"已创建 1 个合班课程组")
 
         # ==================== 课程 ====================
-        # 学时模式说明:
-        # - 16学时: 单周每周一次, 每次连上2节
-        # - 32学时: 每周一次, 每次连上2节
-        # - 48学时: 每周一次, 每次连上3节
-        # - 64学时: 每周二次, 每次连上2节
-        # - 96学时: 每周三次, 每次连上2节
         courses_data = [
             # ==================== 上册课程 ====================
             # 计算机科学与技术 2024 - 上册
             {"name": "程序设计基础", "cohort_idx": 0, "teacher_idx": 0, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 2,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 3},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 2,
+             "semester": "first"},
             {"name": "计算机导论", "cohort_idx": 0, "teacher_idx": 1, "course_type": "theory_only", 
-             "theory_hours": 32, "lab_hours": 0, "total_hours": 32, "teaching_class_count": 1,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 2},
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1,
+             "semester": "first"},
             
             # 计算机科学与技术 2023 - 上册
             {"name": "操作系统", "cohort_idx": 1, "teacher_idx": 3, "course_type": "mixed", 
-             "theory_hours": 48, "lab_hours": 16, "total_hours": 64, "teaching_class_count": 2,
-             "semester": "first", "sessions_per_week": 2, "duration_per_session": 2},
+             "theory_hours": 48, "lab_hours": 16, "teaching_class_count": 2,
+             "semester": "first"},
             {"name": "计算机网络", "cohort_idx": 1, "teacher_idx": 4, "course_type": "mixed", 
-             "theory_hours": 48, "lab_hours": 16, "total_hours": 64, "teaching_class_count": 2,
-             "semester": "first", "sessions_per_week": 2, "duration_per_session": 2,
-             "is_campus_teacher": True},  # 校本部教师课程
+             "theory_hours": 48, "lab_hours": 16, "teaching_class_count": 2,
+             "semester": "first"},
             
             # 软件工程 2024 - 上册
             {"name": "Python程序设计", "cohort_idx": 2, "teacher_idx": 6, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 32, "total_hours": 64, "teaching_class_count": 2,
-             "semester": "first", "sessions_per_week": 2, "duration_per_session": 2},
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 2,
+             "semester": "first"},
             {"name": "软件工程导论", "cohort_idx": 2, "teacher_idx": 7, "course_type": "theory_only", 
-             "theory_hours": 32, "lab_hours": 0, "total_hours": 32, "teaching_class_count": 1,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 2},
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1,
+             "semester": "first"},
             
             # 软件工程 2023 - 上册
             {"name": "软件测试", "cohort_idx": 3, "teacher_idx": 8, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 1,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 3},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 1,
+             "semester": "first"},
             
-            # 数据科学 2024 - 上册 (包含合班课程)
+            # 数据科学 2024 - 上册
             {"name": "大数据导论", "cohort_idx": 4, "teacher_idx": 0, "course_type": "theory_only", 
-             "theory_hours": 32, "lab_hours": 0, "total_hours": 32, "teaching_class_count": 2,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 2},
-            # 合班课程: 数字逻辑电路 (0.5教学班, 与人工智能专业合班)
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 2,
+             "semester": "first"},
+            # 合班课程: 数字逻辑电路
             {"name": "数字逻辑电路", "cohort_idx": 4, "teacher_idx": 1, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 0.5,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 3, "combined_group": 1},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 0.5,
+             "semester": "first", "combined_group": 1},
             
-            # 人工智能 2024 - 上册 (包含合班课程)
+            # 人工智能 2024 - 上册
             {"name": "人工智能导论", "cohort_idx": 5, "teacher_idx": 4, "course_type": "theory_only", 
-             "theory_hours": 32, "lab_hours": 0, "total_hours": 32, "teaching_class_count": 1,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 2},
-            # 合班课程: 数字逻辑电路 (0.5教学班, 与数据科学专业合班)
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1,
+             "semester": "first"},
+            # 合班课程: 数字逻辑电路
             {"name": "数字逻辑电路", "cohort_idx": 5, "teacher_idx": 1, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 0.5,
-             "semester": "first", "sessions_per_week": 1, "duration_per_session": 3, "combined_group": 1},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 0.5,
+             "semester": "first", "combined_group": 1},
             
             # ==================== 下册课程 ====================
             # 计算机科学与技术 2024 - 下册
             {"name": "数据结构", "cohort_idx": 0, "teacher_idx": 2, "course_type": "mixed", 
-             "theory_hours": 48, "lab_hours": 16, "total_hours": 64, "teaching_class_count": 2,
-             "semester": "second", "sessions_per_week": 2, "duration_per_session": 2},
+             "theory_hours": 48, "lab_hours": 16, "teaching_class_count": 2,
+             "semester": "second"},
             {"name": "离散数学", "cohort_idx": 0, "teacher_idx": 1, "course_type": "theory_only", 
-             "theory_hours": 48, "lab_hours": 0, "total_hours": 48, "teaching_class_count": 1,
-             "semester": "second", "sessions_per_week": 1, "duration_per_session": 3},
+             "theory_hours": 48, "lab_hours": 0, "teaching_class_count": 1,
+             "semester": "second"},
             
             # 计算机科学与技术 2023 - 下册
             {"name": "数据库原理", "cohort_idx": 1, "teacher_idx": 5, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 1,
-             "semester": "second", "sessions_per_week": 1, "duration_per_session": 3},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 1,
+             "semester": "second"},
             
             # 软件工程 2024 - 下册 (双教师课程示例)
             {"name": "Web开发技术", "cohort_idx": 2, "teacher_idx": 6, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 32, "total_hours": 64, "teaching_class_count": 2,
-             "semester": "second", "sessions_per_week": 2, "duration_per_session": 2,
-             "dual_teacher": True, "second_teacher_idx": 8, "split_week": 8},  # 教师1上1-8周, 教师2上9-16周
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 2,
+             "semester": "second",
+             "dual_teacher": True, "second_teacher_idx": 8, "split_week": 8},
             
             # 软件工程 2023 - 下册
             {"name": "软件项目管理", "cohort_idx": 3, "teacher_idx": 9, "course_type": "theory_only", 
-             "theory_hours": 32, "lab_hours": 0, "total_hours": 32, "teaching_class_count": 1,
-             "semester": "second", "sessions_per_week": 1, "duration_per_session": 2},
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1,
+             "semester": "second"},
             
             # 数据科学 2024 - 下册
             {"name": "数据分析基础", "cohort_idx": 4, "teacher_idx": 2, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 32, "total_hours": 64, "teaching_class_count": 1,
-             "semester": "second", "sessions_per_week": 2, "duration_per_session": 2},
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 1,
+             "semester": "second"},
             
             # 人工智能 2024 - 下册
             {"name": "机器学习基础", "cohort_idx": 5, "teacher_idx": 6, "course_type": "mixed", 
-             "theory_hours": 32, "lab_hours": 16, "total_hours": 48, "teaching_class_count": 2,
-             "semester": "second", "sessions_per_week": 1, "duration_per_session": 3},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 2,
+             "semester": "second"},
         ]
         
         courses = []
@@ -239,10 +265,7 @@ def init_mock_data():
                 course_type=data["course_type"],
                 theory_hours=data["theory_hours"],
                 lab_hours=data["lab_hours"],
-                total_hours=data.get("total_hours", data["theory_hours"] + data["lab_hours"]),
                 teaching_class_count=data["teaching_class_count"],
-                sessions_per_week=data.get("sessions_per_week", 1),
-                duration_per_session=data.get("duration_per_session", 2),
                 combined_group_id=combined_group1.id if data.get("combined_group") == 1 else None,
                 dual_teacher_enabled=data.get("dual_teacher", False),
                 second_teacher_id=teachers[data["second_teacher_idx"]].id if data.get("dual_teacher") else None,
@@ -253,44 +276,33 @@ def init_mock_data():
         db.commit()
         
         # 追加更多课程 - 确保每个专业至少有一门课程的teaching_class_count等于行政班数量
-        # 这样才能确保每个行政班有独立的时间安排
         extra_courses_data = [
-            # 计算机2024 - 4个行政班，需要teaching_class_count=4的课程
+            # 计算机2024 - 4个行政班
             {"name": "线性代数", "cohort_idx": 0, "teacher_idx": 8, "course_type": "theory_only",
-             "theory_hours": 48, "lab_hours": 0, "teaching_class_count": 4,  # 匹配4个行政班
-             "semester": "first"},
+             "theory_hours": 48, "lab_hours": 0, "teaching_class_count": 4, "semester": "first"},
             {"name": "数字电路实验", "cohort_idx": 0, "teacher_idx": 2, "course_type": "lab_only",
-             "theory_hours": 0, "lab_hours": 32, "teaching_class_count": 4,  # 匹配4个行政班
-             "semester": "first"},
+             "theory_hours": 0, "lab_hours": 32, "teaching_class_count": 4, "semester": "first"},
             # 计算机2023 - 4个行政班
             {"name": "教网技术概论", "cohort_idx": 1, "teacher_idx": 10, "course_type": "theory_only",
-             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 4,  # 匹配4个行政班
-             "semester": "first"},
+             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 4, "semester": "first"},
             {"name": "并发编程", "cohort_idx": 1, "teacher_idx": 3, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 4,  # 匹配4个行政班
-             "semester": "second"},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 4, "semester": "second"},
             # 软件2024 - 3个行政班
             {"name": "Java程序设计", "cohort_idx": 2, "teacher_idx": 6, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3,  # 匹配3个行政班
-             "semester": "first"},
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3, "semester": "first"},
             # 软件2023 - 3个行政班
             {"name": "Web前端基础", "cohort_idx": 3, "teacher_idx": 7, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3,  # 匹配3个行政班
-             "semester": "first"},
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3, "semester": "first"},
             # 数据科学2024 - 3个行政班
             {"name": "Python数据分析", "cohort_idx": 4, "teacher_idx": 11, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3,  # 匹配3个行政班
-             "semester": "first"},
+             "theory_hours": 32, "lab_hours": 32, "teaching_class_count": 3, "semester": "first"},
             {"name": "数据可视化", "cohort_idx": 4, "teacher_idx": 12, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3,
-             "semester": "second"},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3, "semester": "second"},
             # 人工智能2024 - 3个行政班
             {"name": "深度学习基础", "cohort_idx": 5, "teacher_idx": 13, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3,  # 匹配3个行政班
-             "semester": "first"},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3, "semester": "first"},
             {"name": "自然语言处理", "cohort_idx": 5, "teacher_idx": 14, "course_type": "mixed",
-             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3,
-             "semester": "second"},
+             "theory_hours": 32, "lab_hours": 16, "teaching_class_count": 3, "semester": "second"},
         ]
         for data in extra_courses_data:
             course = Course(
@@ -301,39 +313,35 @@ def init_mock_data():
                 course_type=data["course_type"],
                 theory_hours=data.get("theory_hours", 0),
                 lab_hours=data.get("lab_hours", 0),
-                total_hours=data.get("theory_hours", 0) + data.get("lab_hours", 0),
                 teaching_class_count=data["teaching_class_count"],
-                sessions_per_week=data.get("sessions_per_week", 1),
-                duration_per_session=data.get("duration_per_session", 2),
-                combined_group_id=None,
-                dual_teacher_enabled=False,
-                second_teacher_id=None,
-                teacher_split_week=8
             )
             db.add(course)
         db.commit()
         
-        # 添加公共课（cohort_id 为 NULL）
-        public_courses_data = [
-            {"name": "思想道德与法律基础", "teacher_idx": 15, "course_type": "theory_only",
-             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1, "semester": "first"},
-            {"name": "形势与政策", "teacher_idx": 16, "course_type": "theory_only",
-             "theory_hours": 16, "lab_hours": 0, "teaching_class_count": 1, "semester": "first"},
-            {"name": "军事理论", "teacher_idx": 17, "course_type": "theory_only",
-             "theory_hours": 16, "lab_hours": 0, "teaching_class_count": 1, "semester": "second"},
-            {"name": "大学生心理健康", "teacher_idx": 15, "course_type": "theory_only",
-             "theory_hours": 32, "lab_hours": 0, "teaching_class_count": 1, "semester": "both"},
+        # 添加多专业公共课（使用 cohort_ids）
+        multi_cohort_courses = [
+            # 计算机2024 + 软件2024 的公共数学课
+            {"name": "高等数学A", "cohort_ids": [cohorts[0].id, cohorts[2].id], 
+             "cohort_teaching_class_counts": {str(cohorts[0].id): 2, str(cohorts[2].id): 1.5},
+             "teacher_idx": 15, "course_type": "theory_only",
+             "theory_hours": 64, "lab_hours": 0, "teaching_class_count": 3.5, "semester": "first"},
+            # 数据科学2024 + 人工智能2024 的公共课
+            {"name": "概率论与统计", "cohort_ids": [cohorts[4].id, cohorts[5].id],
+             "cohort_teaching_class_counts": {str(cohorts[4].id): 1.5, str(cohorts[5].id): 1.5},
+             "teacher_idx": 16, "course_type": "theory_only",
+             "theory_hours": 48, "lab_hours": 0, "teaching_class_count": 3, "semester": "second"},
         ]
-        for data in public_courses_data:
+        for data in multi_cohort_courses:
             course = Course(
                 name=data["name"],
-                cohort_id=None,  # 公共课无专业年级
+                cohort_id=None,  # 多专业课不设单一cohort_id
+                cohort_ids=data["cohort_ids"],
+                cohort_teaching_class_counts=data["cohort_teaching_class_counts"],
                 teacher_id=teachers[data["teacher_idx"]].id,
                 semester=data.get("semester", "first"),
                 course_type=data["course_type"],
                 theory_hours=data.get("theory_hours", 0),
                 lab_hours=data.get("lab_hours", 0),
-                total_hours=data.get("theory_hours", 0) + data.get("lab_hours", 0),
                 teaching_class_count=data["teaching_class_count"],
             )
             db.add(course)
@@ -343,108 +351,113 @@ def init_mock_data():
         total_courses = db.query(Course).count()
         first_semester = db.query(Course).filter(Course.semester == "first").count()
         second_semester = db.query(Course).filter(Course.semester == "second").count()
+        both_semester = db.query(Course).filter(Course.semester == "both").count()
         dual_teacher = db.query(Course).filter(Course.dual_teacher_enabled == True).count()
         combined = db.query(Course).filter(Course.combined_group_id.isnot(None)).count()
-        public_courses = db.query(Course).filter(Course.cohort_id.is_(None)).count()
-        print(f"已创建 {total_courses} 门课程 (上册:{first_semester}, 下册:{second_semester}, 双教师:{dual_teacher}, 合班:{combined}, 公共课:{public_courses})")
+        from sqlalchemy import func, cast
+        from sqlalchemy.dialects.postgresql import JSONB
+        # PostgreSQL JSON比较需要转换为JSONB或使用函数
+        multi_cohort = db.query(Course).filter(
+            Course.cohort_ids.isnot(None),
+            func.jsonb_array_length(cast(Course.cohort_ids, JSONB)) > 0
+        ).count()
+        print(f"已创建 {total_courses} 门课程 (上册:{first_semester}, 下册:{second_semester}, 全年:{both_semester}, 双教师:{dual_teacher}, 合班组:{combined}, 多专业:{multi_cohort})")
         
-        # ==================== 公共课/固定课程 ====================
-        # 计算机科学与技术 2024 - 英语课（不同行政班在不同时间上课）
-        fixed_schedules = [
-            # 英语课 - 1班和2班 周一上午
+        # ==================== 固定课程 ====================
+        fixed_schedules_data = [
+            # 计算机科学与技术 2024 - 英语课（1-2班）
             {"cohort_idx": 0, "course_name": "大学英语", "teacher_name": "外聘教师1", 
-             "day": 1, "period": 1, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": "A", "admin_class_indices": [1, 2]},
-            # 英语课 - 3班 周二上午
+             "day": 1, "period": 1, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": [admin_classes_by_cohort[cohorts[0].id][0].id, 
+                                 admin_classes_by_cohort[cohorts[0].id][1].id]},
+            # 计算机科学与技术 2024 - 英语课（3-4班）
             {"cohort_idx": 0, "course_name": "大学英语", "teacher_name": "外聘教师1", 
-             "day": 2, "period": 1, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": "B", "admin_class_indices": [3]},
-            # 体育课 - 全专业同一时间 (不需要标签区分)
+             "day": 2, "period": 1, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": [admin_classes_by_cohort[cohorts[0].id][2].id,
+                                 admin_classes_by_cohort[cohorts[0].id][3].id]},
+            # 计算机科学与技术 2024 - 体育课（全专业）
             {"cohort_idx": 0, "course_name": "体育", "teacher_name": "体育教师", 
-             "day": 3, "period": 5, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
-        ]
-        
-        fixed_count = 0
-        for fs_data in fixed_schedules:
-            fs = FixedSchedule(
-                cohort_id=cohorts[fs_data["cohort_idx"]].id,
-                semester="first",
-                course_name=fs_data["course_name"],
-                teacher_name=fs_data["teacher_name"],
-                day=fs_data["day"],
-                period=fs_data["period"],
-                duration=fs_data["duration"],
-                weeks=fs_data["weeks"],
-                group_tag=fs_data["group_tag"],
-                requires_tag=fs_data["group_tag"] is not None,
-                admin_class_indices=fs_data["admin_class_indices"]
-            )
-            db.add(fs)
-            fixed_count += 1
-        db.commit()
-        
-        # 追加一些公共课/固定课
-        extra_fixed = [
+             "day": 3, "period": 5, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},  # 空表示全部行政班
+            
+            # 计算机科学与技术 2023 - 英语课
             {"cohort_idx": 1, "course_name": "大学英语", "teacher_name": "外聘教师2",
-             "day": 1, "period": 3, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 1, "period": 3, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},
+            
+            # 软件工程 2024 - 英语课
             {"cohort_idx": 2, "course_name": "大学英语", "teacher_name": "外聘教师1",
-             "day": 2, "period": 3, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 2, "period": 3, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},
+            
+            # 软件工程 2023 - 英语课
             {"cohort_idx": 3, "course_name": "大学英语", "teacher_name": "外聘教师3",
-             "day": 4, "period": 3, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 4, "period": 3, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},
+            
+            # 数据科学 2024 - 英语课
             {"cohort_idx": 4, "course_name": "大学英语", "teacher_name": "外聘教师4",
-             "day": 5, "period": 3, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 5, "period": 3, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},
+            
+            # 人工智能 2024 - 体育课
             {"cohort_idx": 5, "course_name": "大学体育", "teacher_name": "体育教师3",
-             "day": 5, "period": 7, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 5, "period": 7, "duration": 2, "weeks": list(range(1, 17)), "semester": "first",
+             "admin_class_ids": []},
+            
+            # 下册固定课
             {"cohort_idx": 0, "course_name": "体育", "teacher_name": "体育教师1",
-             "day": 4, "period": 7, "duration": 2, "weeks": list(range(1, 17)),
-             "group_tag": None, "admin_class_indices": []},
+             "day": 4, "period": 7, "duration": 2, "weeks": list(range(1, 17)), "semester": "second",
+             "admin_class_ids": []},
+            {"cohort_idx": 1, "course_name": "体育", "teacher_name": "体育教师2",
+             "day": 3, "period": 7, "duration": 2, "weeks": list(range(1, 17)), "semester": "second",
+             "admin_class_ids": []},
         ]
-        for fs_data in extra_fixed:
+        
+        for fs_data in fixed_schedules_data:
             fs = FixedSchedule(
                 cohort_id=cohorts[fs_data["cohort_idx"]].id,
-                semester="first",
+                semester=fs_data.get("semester", "first"),
                 course_name=fs_data["course_name"],
                 teacher_name=fs_data["teacher_name"],
                 day=fs_data["day"],
                 period=fs_data["period"],
                 duration=fs_data["duration"],
                 weeks=fs_data["weeks"],
-                group_tag=fs_data["group_tag"],
-                requires_tag=fs_data["group_tag"] is not None,
-                admin_class_indices=fs_data["admin_class_indices"]
+                admin_class_ids=fs_data.get("admin_class_ids", [])
             )
             db.add(fs)
         db.commit()
-        fixed_count = db.query(FixedSchedule).count()
-        print(f"已创建 {fixed_count} 个固定课程/公共课")
         
+        fixed_count = db.query(FixedSchedule).count()
+        print(f"已创建 {fixed_count} 个固定课程")
+        
+        # ==================== 汇总 ====================
         print("\n" + "="*60)
         print("模拟数据初始化完成！")
         print("="*60)
-        print(f"  专业年级:   {len(cohorts)} 个")
-        print(f"  行政班:     {len(admin_classes)} 个")
+        print(f"  专业年级:     {len(cohorts)} 个")
+        print(f"  行政班:       {len(admin_classes)} 个")
         campus_teacher_count = len([t for t in teachers_data if t['is_campus_teacher']])
-        print(f"  教师:       {len(teachers)} 位 (校本部:{campus_teacher_count} 位)")
-        print(f"  机房:       {len(rooms)} 个")
-        print(f"  课程:       {total_courses} 门")
-        print(f"    - 上册:   {first_semester} 门")
-        print(f"    - 下册:   {second_semester} 门")
-        print(f"    - 双教师: {dual_teacher} 门")
-        print(f"    - 合班:   {combined} 门")
-        print(f"    - 公共课: {public_courses} 门")
-        print(f"  合班课程组: 1 个")
-        print(f"  固定课程:   {fixed_count} 个")
+        print(f"  教师:         {len(teachers)} 位 (校本部:{campus_teacher_count} 位)")
+        print(f"  教师偏好:     {preferences_count} 条")
+        print(f"  机房:         {len(rooms)} 个")
+        print(f"  课程:         {total_courses} 门")
+        print(f"    - 上册:     {first_semester} 门")
+        print(f"    - 下册:     {second_semester} 门")
+        print(f"    - 全年:     {both_semester} 门")
+        print(f"    - 双教师:   {dual_teacher} 门")
+        print(f"    - 合班组:   {combined} 门")
+        print(f"    - 多专业:   {multi_cohort} 门")
+        print(f"  合班课程组:   1 个")
+        print(f"  固定课程:     {fixed_count} 个")
         print("="*60)
         
     except Exception as e:
         db.rollback()
         print(f"错误: {e}")
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         db.close()

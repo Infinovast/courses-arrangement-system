@@ -623,7 +623,7 @@
                                 </div>
                                 <select v-model="selectedCohortForSchedule" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500">
                                     <option :value="null">全部专业年级</option>
-                                    <option v-for="c in cohorts" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
+                                    <option v-for="c in cohortsWithSchedule" :key="c.id" :value="c.id">{{ c.major }} {{ c.grade }}级</option>
                                 </select>
                                 <select v-model="selectedAdminClass" class="px-4 py-2 bg-dark-700 rounded-lg border border-gray-700 focus:border-accent-500" :disabled="!selectedCohortForSchedule">
                                     <option :value="null">全部行政班</option>
@@ -705,10 +705,21 @@
                                         <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
                                         <template v-for="period in 11" :key="period">
                                             <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
-                                            <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative">
+                                            <div v-for="day in 5" :key="day" 
+                                                class="time-slot border-t border-l border-gray-800 p-1 relative transition-colors"
+                                                :class="getSlotClass(day, period)"
+                                                @dragover="onDragOver($event, day, period)"
+                                                @dragleave="onDragLeave"
+                                                @drop="onDrop($event, day, period)">
                                                 <div v-for="course in getCoursesAtForGroup(day, period, group)" :key="course.id"
-                                                    class="course-block rounded-lg p-2 text-xs mb-1"
-                                                    :class="course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30')">
+                                                    class="course-block rounded-lg p-2 text-xs mb-1 group relative"
+                                                    :class="[
+                                                        course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30'),
+                                                        !course.is_fixed ? 'cursor-grab active:cursor-grabbing' : ''
+                                                    ]"
+                                                    :draggable="!course.is_fixed"
+                                                    @dragstart="onDragStart($event, course)"
+                                                    @dragend="onDragEnd">
                                                     <p class="font-medium truncate">{{ course.course_name }}</p>
                                                     <p class="text-gray-400 truncate text-[10px]">({{ course.course_type_str || '课程' }}, {{ course.week_str || '第'+course.week+'周' }}, {{ course.teacher_name }}{{ course.room_name ? ', '+course.room_name : '' }})</p>
                                                 </div>
@@ -720,15 +731,45 @@
                             
                             <!-- 默认单张课表 -->
                             <div v-else class="glass rounded-2xl p-6 overflow-auto">
+                                <!-- 拖拽调课提示栏 -->
+                                <div v-if="adjustMode" class="mb-4 p-3 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-between">
+                                    <div class="flex items-center space-x-3">
+                                        <i class="fas fa-arrows-alt text-blue-400 animate-pulse"></i>
+                                        <div>
+                                            <p class="text-sm font-medium text-blue-300">正在拖拽: {{ adjustingCourse?.course_name }}</p>
+                                            <p class="text-xs text-gray-400">拖到绿色时间槽放置，红色表示有冲突（需确认）</p>
+                                        </div>
+                                    </div>
+                                    <span class="text-xs text-gray-500">松开鼠标取消</span>
+                                </div>
+                                
                                 <div class="schedule-grid min-w-[900px]">
                                     <div class="bg-dark-700 rounded-tl-lg p-3 text-center text-sm font-medium text-gray-400">节次</div>
                                     <div v-for="day in ['周一', '周二', '周三', '周四', '周五']" :key="day" class="bg-dark-700 p-3 text-center text-sm font-medium text-gray-400 last:rounded-tr-lg">{{ day }}</div>
                                     <template v-for="period in 11" :key="period">
                                         <div class="bg-dark-800 p-2 text-center text-xs text-gray-500 border-t border-gray-800">{{ period }}</div>
-                                        <div v-for="day in 5" :key="day" class="time-slot border-t border-l border-gray-800 p-1 relative">
+                                        <div v-for="day in 5" :key="day" 
+                                            class="time-slot border-t border-l border-gray-800 p-1 relative transition-colors"
+                                            :class="getSlotClass(day, period)"
+                                            @dragover="onDragOver($event, day, period)"
+                                            @dragleave="onDragLeave"
+                                            @drop="onDrop($event, day, period)">
+                                            <!-- 调课模式下的冲突提示 -->
+                                            <div v-if="adjustMode && getSlotInfo(day, period)?.has_conflict" 
+                                                class="absolute inset-0 flex items-center justify-center bg-red-500/10 z-10 pointer-events-none">
+                                                <i class="fas fa-exclamation-triangle text-red-400 text-xs"></i>
+                                            </div>
+                                            
                                             <div v-for="course in getCoursesAt(day, period)" :key="course.id"
-                                                class="course-block rounded-lg p-2 text-xs mb-1"
-                                                :class="course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30')">
+                                                class="course-block rounded-lg p-2 text-xs mb-1 group relative"
+                                                :class="[
+                                                    course.is_fixed ? 'bg-yellow-500/20 border border-yellow-500/30' : (course.is_lab ? 'bg-cyan-500/20 border border-cyan-500/30' : 'bg-accent-500/20 border border-accent-500/30'),
+                                                    adjustMode && adjustingCourse?.teaching_class_id === course.teaching_class_id && adjustingCourse?.is_lab === course.is_lab && adjustingCourse?.day === course.day && adjustingCourse?.period === course.period ? 'ring-2 ring-blue-400' : '',
+                                                    !course.is_fixed ? 'cursor-grab active:cursor-grabbing' : ''
+                                                ]"
+                                                :draggable="!course.is_fixed"
+                                                @dragstart="onDragStart($event, course)"
+                                                @dragend="onDragEnd">
                                                 <p class="font-medium truncate">{{ course.course_name }}</p>
                                                 <p class="text-gray-400 truncate text-[10px]">({{ course.course_type_str || '课程' }}, {{ course.week_str || '第'+course.week+'周' }}, {{ course.teacher_name }}{{ course.room_name ? ', '+course.room_name : '' }})</p>
                                                 <p v-if="course.admin_class_id && !selectedAdminClass" class="text-gray-500 truncate text-[10px]">{{ getAdminClassName(course.admin_class_id) }}</p>
@@ -1351,6 +1392,12 @@
                 const showPenaltyDetails = ref(false);
                 const expandedConstraint = ref(null);  // 当前展开的软约束详情
                 
+                // 调课模式状态
+                const adjustMode = ref(false);  // 是否处于调课模式
+                const adjustingCourse = ref(null);  // 当前正在调整的课程
+                const availableSlots = ref([]);  // 可用时间槽信息
+                const adjustLoading = ref(false);  // 加载状态
+                
                 // 主题 - 初始化
                 const savedTheme = localStorage.getItem('theme');
                 const currentTheme = ref(savedTheme && ['dark', 'light', 'custom'].includes(savedTheme) ? savedTheme : 'dark');
@@ -1529,6 +1576,22 @@
                     return adminClasses.value.filter(ac => ac.cohort_id === selectedCohortForSchedule.value);
                 });
 
+                // 根据排课会话中的 cohort_ids 筛选出有课的专业年级
+                const cohortsWithSchedule = computed(() => {
+                    // 从 latestSession.cohort_ids 获取该学期所有有课的专业年级
+                    let result = cohorts.value;
+                    if (latestSession.value && latestSession.value.cohort_ids && latestSession.value.cohort_ids.length > 0) {
+                        const cohortIds = new Set(latestSession.value.cohort_ids);
+                        result = cohorts.value.filter(c => cohortIds.has(c.id));
+                    }
+                    // 排序：专业名称正序，年级倒序（高年级在前）
+                    return [...result].sort((a, b) => {
+                        const majorCompare = (a.major || '').localeCompare(b.major || '', 'zh-CN');
+                        if (majorCompare !== 0) return majorCompare;
+                        return (b.grade || 0) - (a.grade || 0);  // 年级倒序
+                    });
+                });
+
                 const modalTitle = computed(() => {
                     const titles = {
                         cohort: form.value.id ? '编辑专业年级' : '添加专业年级',
@@ -1694,7 +1757,7 @@
                 };
 
                 const getCoursesAt = (day, period) => {
-                    // 考虑课程的持续节次，如果课程从第1节开始持续2节，则在第1节和第2节都应该显示
+                    // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return scheduleResults.value.filter(r => {
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
@@ -1705,6 +1768,7 @@
                 
                 // 获取特定子组的课程
                 const getCoursesAtForGroup = (day, period, groupCourses) => {
+                    // 课程卡片在所有占用的节次都显示，以便正确渲染跨节次效果
                     return groupCourses.filter(r => {
                         if (r.day !== day) return false;
                         const startPeriod = r.period;
@@ -1752,6 +1816,9 @@
                     // 如果没有多教学班课程，检查时间冲突
                     if (multiTcCourses.length === 0) {
                         // 回退到时间冲突检测逻辑
+                        // 使用 (id + teaching_class_id) 作为唯一标识，避免不同教学班的课程被误判为同一课
+                        const getCourseKey = (c) => `${c.id}_${c.teaching_class_id}`;
+                        
                         const timeSlotMap = new Map();
                         for (const course of scheduleResults.value) {
                             const duration = course.duration || 1;
@@ -1766,7 +1833,8 @@
                         
                         let hasTimeConflict = false;
                         for (const [slot, courses] of timeSlotMap.entries()) {
-                            const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
+                            // 使用 getCourseKey 去重
+                            const uniqueCourses = [...new Map(courses.map(c => [getCourseKey(c), c])).values()];
                             if (uniqueCourses.length > 1) {
                                 hasTimeConflict = true;
                                 break;
@@ -1778,16 +1846,16 @@
                         }
                         
                         // 有时间冲突，按时间冲突分组
-                        const conflictCourses = new Set();
+                        const conflictCourseKeys = new Set();
                         for (const [slot, courses] of timeSlotMap.entries()) {
-                            const uniqueCourses = [...new Map(courses.map(c => [c.id, c])).values()];
+                            const uniqueCourses = [...new Map(courses.map(c => [getCourseKey(c), c])).values()];
                             if (uniqueCourses.length > 1) {
-                                uniqueCourses.forEach(c => conflictCourses.add(c.id));
+                                uniqueCourses.forEach(c => conflictCourseKeys.add(getCourseKey(c)));
                             }
                         }
                         
-                        const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourses.has(c.id));
-                        const conflictCourseList = scheduleResults.value.filter(c => conflictCourses.has(c.id));
+                        const nonConflictCourses = scheduleResults.value.filter(c => !conflictCourseKeys.has(getCourseKey(c)));
+                        const conflictCourseList = scheduleResults.value.filter(c => conflictCourseKeys.has(getCourseKey(c)));
                         
                         const scheduleGroups = [];
                         for (const course of conflictCourseList) {
@@ -2281,6 +2349,113 @@
                         }
                     }
                 };
+                
+                // ==================== 拖拽调课功能 ====================
+                const onDragStart = async (event, course) => {
+                    if (course.is_fixed) {
+                        event.preventDefault();
+                        return;
+                    }
+                    
+                    // 设置拖拽数据
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', JSON.stringify({ courseId: course.id }));
+                    
+                    adjustingCourse.value = course;
+                    adjustLoading.value = true;
+                    
+                    try {
+                        // 获取可用时间槽
+                        const data = await api(`/schedule/results/${course.id}/available-slots`);
+                        availableSlots.value = data.available_slots || [];
+                        adjustMode.value = true;
+                    } catch (e) {
+                        showToast('获取可用时间槽失败: ' + e.message, 'error');
+                        adjustingCourse.value = null;
+                        adjustMode.value = false;
+                    } finally {
+                        adjustLoading.value = false;
+                    }
+                };
+                
+                const onDragEnd = () => {
+                    // 拖拽结束（未放置）时清理状态
+                    adjustMode.value = false;
+                    adjustingCourse.value = null;
+                    availableSlots.value = [];
+                };
+                
+                const onDragOver = (event, day, period) => {
+                    if (!adjustMode.value || !adjustingCourse.value) return;
+                    
+                    const slot = getSlotInfo(day, period);
+                    if (slot && !slot.is_current) {
+                        event.preventDefault();  // 允许放置
+                        event.dataTransfer.dropEffect = 'move';
+                    }
+                };
+                
+                const onDragLeave = (event) => {
+                    // 可选：移除悬停效果
+                };
+                
+                const onDrop = async (event, day, period) => {
+                    event.preventDefault();
+                    
+                    if (!adjustMode.value || !adjustingCourse.value) return;
+                    
+                    const slot = getSlotInfo(day, period);
+                    if (!slot || slot.is_current) return;
+                    
+                    // 如果有冲突，确认是否强制调整
+                    if (slot.has_conflict) {
+                        const conflictDescs = slot.conflicts.slice(0, 3).map(c => c.desc).join('\n');
+                        if (!confirm(`目标时间槽存在冲突:\n${conflictDescs}\n\n确定要强制调整吗？`)) {
+                            onDragEnd();  // 取消调课
+                            return;
+                        }
+                    }
+                    
+                    try {
+                        adjustLoading.value = true;
+                        const force = slot.has_conflict;
+                        const courseName = adjustingCourse.value.course_name;
+                        const duration = adjustingCourse.value.duration || 2;
+                        
+                        await api(`/schedule/results/${adjustingCourse.value.id}/adjust?new_day=${day}&new_period=${period}&force=${force}`, {
+                            method: 'POST'
+                        });
+                        
+                        showToast(`成功将 ${courseName} 调整到 ${slot.day_name} 第${period}-${period + duration - 1}节`);
+                        onDragEnd();  // 清理状态
+                        await loadScheduleResults();  // 刷新课表
+                    } catch (e) {
+                        showToast('调课失败: ' + e.message, 'error');
+                        onDragEnd();
+                    } finally {
+                        adjustLoading.value = false;
+                    }
+                };
+                
+                const cancelAdjust = () => {
+                    adjustMode.value = false;
+                    adjustingCourse.value = null;
+                    availableSlots.value = [];
+                };
+                
+                const getSlotInfo = (day, period) => {
+                    if (!adjustMode.value || !adjustingCourse.value) return null;
+                    return availableSlots.value.find(s => s.day === day && s.period === period);
+                };
+                
+                const getSlotClass = (day, period) => {
+                    if (!adjustMode.value) return '';
+                    const slot = getSlotInfo(day, period);
+                    if (!slot) return '';
+                    if (slot.is_current) return 'bg-blue-500/20';
+                    if (slot.has_conflict) return 'bg-red-500/10';
+                    return 'bg-green-500/10';
+                };
 
                 const deleteTeacher = async (id) => {
                     if (!confirm('确定删除该教师？')) return;
@@ -2497,8 +2672,11 @@
                     if (latestSession.value) loadScheduleResults();
                 });
 
-                // 当学期改变时重新加载对应学期的会话
+                // 当学期改变时重新加载对应学期的会话，并重置筛选条件
                 watch(selectedSemester, async () => {
+                    // 重置专业年级和行政班选择
+                    selectedCohortForSchedule.value = null;
+                    selectedAdminClass.value = null;
                     await loadLatestSession();
                 });
 
@@ -2514,9 +2692,10 @@
                     currentView, loading, scheduling, schedulingSemester, showModal, modalType, classTab,
                     searchTeacher, filterCohortId, filterSemester, filterCourseCategory, selectedCohortForSchedule, selectedAdminClass, selectedWeek, selectedSemester, sidebarExpanded,
                     showPenaltyDetails, expandedConstraint,
+                    adjustMode, adjustingCourse, availableSlots, adjustLoading,
                     currentTheme, setTheme, customColor, customThemeStyle, onCustomColorChange,
                     cohorts, adminClasses, teachers, rooms, courses, fixedCourses, unifiedCourses, scheduleResults, latestSession,
-                    form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, modalTitle, gradeYears, groupedSchedules,
+                    form, toast, navItems, currentTitle, stats, filteredTeachers, filteredCourses, filteredUnifiedCourses, filteredAdminClassesForSchedule, cohortsWithSchedule, modalTitle, gradeYears, groupedSchedules,
                     cohortTeachingClassTotal, updateCohortTeachingClassCount, effectiveTeachingClassCount, teacherConfigTotal, canUseMultiTeacher,
                     addTeacherConfig, removeTeacherConfig,
                     refreshData, openModal, closeModal, showToast, formatDate, getStatusText, navigateToStat,
@@ -2524,7 +2703,8 @@
                     saveCohort, editCohort, deleteCohort, saveAdminClass, editAdminClass, deleteAdminClass,
                     saveTeacher, editTeacher, deleteTeacher, isPreferredSlot, isUndesiredSlot, getPreferenceSlotClass, togglePreferenceSlot, clearAllPreferences, setAllDayPreference,
                     saveRoom, editRoom, deleteRoom,
-                    saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel
+                    saveCourse, editCourse, deleteCourse, saveFixedCourse, editFixedCourse, deleteFixedCourse, startScheduling, exportExcel,
+                    onDragStart, onDragEnd, onDragOver, onDragLeave, onDrop, cancelAdjust, getSlotInfo, getSlotClass
                 };
             }
         }).mount('#app');

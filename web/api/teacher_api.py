@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from ..core.database import get_db
-from ..models.db_models import Teacher, TeacherPreference
+from ..dbmodels.db_models import Teacher, TeacherPreference
 from ..schemas.schemas import (
     TeacherCreate, TeacherUpdate, TeacherResponse,
     TeacherPreferenceCreate, TeacherPreferenceResponse

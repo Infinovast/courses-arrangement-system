@@ -24,5 +24,5 @@ def get_db():
 
 def init_db():
     """初始化数据库（创建所有表）"""
-    from ..models import db_models  # 导入所有模型以确保它们被注册
+    from ..dbmodels import db_models  # 导入所有模型以确保它们被注册
     Base.metadata.create_all(bind=engine)

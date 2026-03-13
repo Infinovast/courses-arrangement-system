@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 import pandas as pd
 
 from ..core.database import get_db
-from ..models.db_models import ScheduleResult, ScheduleSession, Cohort, FixedSchedule, SubgroupAssignment
+from ..dbmodels.db_models import ScheduleResult, ScheduleSession, Cohort, FixedSchedule, SubgroupAssignment
 from ..schemas.schemas import (
     ScheduleResultResponse, ScheduleResultUpdate, ScheduleSessionResponse,
     StartScheduleRequest, ScheduleResponse, FixedScheduleCreate, FixedScheduleResponse,
@@ -77,7 +77,45 @@ def get_latest_session(semester: Optional[str] = None, db: Session = Depends(get
         排课会话信息，没有记录时返回 null
     """
     service = ScheduleService(db)
-    return service.get_latest_session(semester)
+    session = service.get_latest_session(semester)
+    if not session:
+        return None
+    
+    # 获取该会话涉及的所有专业年级ID
+    # 分开查询 cohort_id 和 cohort_ids，避免 JSON 类型的 DISTINCT 问题
+    cohort_ids_set = set()
+    
+    # 查询所有不同的 cohort_id
+    cohort_id_results = db.query(ScheduleResult.cohort_id).filter(
+        ScheduleResult.session_id == session.session_id,
+        ScheduleResult.cohort_id.isnot(None)
+    ).distinct().all()
+    for r in cohort_id_results:
+        cohort_ids_set.add(r.cohort_id)
+    
+    # 查询所有包含 cohort_ids 的记录（只查询非空的）
+    cohort_ids_results = db.query(ScheduleResult.cohort_ids).filter(
+        ScheduleResult.session_id == session.session_id,
+        ScheduleResult.cohort_ids.isnot(None)
+    ).limit(100).all()  # 限制数量，避免过大查询
+    for r in cohort_ids_results:
+        if r.cohort_ids:
+            for cid in r.cohort_ids:
+                cohort_ids_set.add(cid)
+    
+    # 返回带 cohort_ids 的响应
+    return ScheduleSessionResponse(
+        id=session.id,
+        session_id=session.session_id,
+        semester=session.semester,
+        status=session.status,
+        fitness_score=session.fitness_score,
+        penalty_details=session.penalty_details,
+        message=session.message,
+        created_at=session.created_at,
+        completed_at=session.completed_at,
+        cohort_ids=sorted(list(cohort_ids_set))
+    )
 
 
 @router.get("/sessions/{session_id}", response_model=ScheduleSessionResponse, summary="获取排课会话详情")
@@ -108,7 +146,7 @@ def get_schedule_results(
         week: 周次筛选
         day: 星期几筛选
     """
-    from ..models.db_models import AdminClass, Cohort as CohortModel
+    from ..dbmodels.db_models import AdminClass, Cohort as CohortModel
     
     # 先查询所有结果（不按周筛选），用于聚合周次信息
     all_results_query = db.query(ScheduleResult).filter(ScheduleResult.session_id == session_id)
@@ -231,6 +269,219 @@ def update_schedule_result(
     return result
 
 
+@router.get("/results/{result_id}/available-slots", summary="获取可调整的时间槽")
+def get_available_slots(
+    result_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取指定排课记录可以调整到的所有时间槽，以及每个时间槽的冲突信息
+    
+    返回按教学班检查的冲突情况，包括：
+    - 教师冲突
+    - 学生冲突（同一行政班的其他课）
+    - 机房冲突（如果是实验课）
+    - 时间槽合法性（根据课程时长动态计算）
+    """
+    # 获取当前排课记录
+    result = db.query(ScheduleResult).filter(ScheduleResult.id == result_id).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="排课记录不存在")
+    
+    # 获取同一教学班、同一类型（理论/实验）、同一时间槽的所有记录
+    # 同一门课的理论课和实验课应该可以独立调整
+    tc_results = db.query(ScheduleResult).filter(
+        ScheduleResult.session_id == result.session_id,
+        ScheduleResult.teaching_class_id == result.teaching_class_id,
+        ScheduleResult.is_lab == result.is_lab,
+        ScheduleResult.day == result.day,
+        ScheduleResult.period == result.period
+    ).all()
+    
+    # 获取该部分的周次列表
+    tc_weeks = sorted(set(r.week for r in tc_results))
+    
+    # 获取该会话的所有排课记录（用于冲突检测）
+    all_results = db.query(ScheduleResult).filter(
+        ScheduleResult.session_id == result.session_id
+    ).all()
+    
+    # 构建冲突检测索引
+    # 教师占用: (teacher_name, week, day, period) -> [course_name]
+    teacher_occupied = defaultdict(list)
+    # 行政班占用: (admin_class_id, week, day, period) -> [course_name]
+    admin_class_occupied = defaultdict(list)
+    # 机房占用: (room_name, week, day, period) -> [course_name]
+    room_occupied = defaultdict(list)
+    
+    for r in all_results:
+        # 排除当前要调整的记录（同一教学班、同一类型、同一时间槽）
+        if (r.teaching_class_id == result.teaching_class_id and 
+            r.is_lab == result.is_lab and
+            r.day == result.day and 
+            r.period == result.period):
+            continue
+        
+        for p_offset in range(r.duration):
+            period = r.period + p_offset
+            
+            # 教师占用
+            teacher_occupied[(r.teacher_name, r.week, r.day, period)].append(r.course_name)
+            
+            # 行政班占用
+            if r.admin_class_id:
+                admin_class_occupied[(r.admin_class_id, r.week, r.day, period)].append(r.course_name)
+            
+            # 机房占用
+            if r.room_name and r.is_lab:
+                room_occupied[(r.room_name, r.week, r.day, period)].append(r.course_name)
+    
+    # 获取该教学班涉及的所有行政班
+    tc_admin_class_ids = set(r.admin_class_id for r in tc_results if r.admin_class_id)
+    
+    # 生成所有可能的时间槽
+    # 根据课程持续时长动态计算：从第1节到第(12-duration)节都可以作为开始节次
+    duration = result.duration
+    available_slots = []
+    
+    for day in range(1, 6):  # 周一到周五
+        for period in range(1, 12 - duration + 1):  # 确保课程不超过第11节
+            
+            conflicts = []
+            has_hard_conflict = False
+            
+            # 检查每个周次的冲突
+            for week in tc_weeks:
+                for p_offset in range(duration):
+                    p = period + p_offset
+                    
+                    # 检查教师冲突
+                    teacher_key = (result.teacher_name, week, day, p)
+                    if teacher_key in teacher_occupied:
+                        conflicts.append({
+                            'type': 'teacher',
+                            'week': week,
+                            'day': day,
+                            'period': p,
+                            'desc': f"第{week}周 教师{result.teacher_name}已有课: {', '.join(teacher_occupied[teacher_key])}"
+                        })
+                        has_hard_conflict = True
+                    
+                    # 检查行政班冲突
+                    for ac_id in tc_admin_class_ids:
+                        ac_key = (ac_id, week, day, p)
+                        if ac_key in admin_class_occupied:
+                            conflicts.append({
+                                'type': 'student',
+                                'week': week,
+                                'day': day,
+                                'period': p,
+                                'desc': f"第{week}周 学生已有课: {', '.join(admin_class_occupied[ac_key])}"
+                            })
+                            has_hard_conflict = True
+                    
+                    # 检查机房冲突（仅实验课）
+                    if result.is_lab and result.room_name:
+                        room_key = (result.room_name, week, day, p)
+                        if room_key in room_occupied:
+                            conflicts.append({
+                                'type': 'room',
+                                'week': week,
+                                'day': day,
+                                'period': p,
+                                'desc': f"第{week}周 {result.room_name}已有课: {', '.join(room_occupied[room_key])}"
+                            })
+                            has_hard_conflict = True
+            
+            # 跳过当前时间槽
+            is_current = (day == result.day and period == result.period)
+            
+            available_slots.append({
+                'day': day,
+                'day_name': ['周一', '周二', '周三', '周四', '周五'][day - 1],
+                'period': period,
+                'period_range': f"第{period}-{period + duration - 1}节",
+                'conflicts': conflicts,
+                'has_conflict': has_hard_conflict,
+                'is_current': is_current
+            })
+    
+    return {
+        'teaching_class_id': result.teaching_class_id,
+        'course_name': result.course_name,
+        'teacher_name': result.teacher_name,
+        'duration': duration,
+        'weeks': tc_weeks,
+        'week_str': _format_weeks(tc_weeks),
+        'current_slot': {
+            'day': result.day,
+            'day_name': ['周一', '周二', '周三', '周四', '周五'][result.day - 1],
+            'period': result.period,
+            'period_range': f"第{result.period}-{result.period + duration - 1}节"
+        },
+        'available_slots': available_slots
+    }
+
+
+@router.post("/results/{result_id}/adjust", summary="执行调课")
+def adjust_schedule(
+    result_id: int,
+    new_day: int,
+    new_period: int,
+    force: bool = False,
+    db: Session = Depends(get_db)
+):
+    """将指定排课记录的教学班调整到新的时间槽
+    
+    Args:
+        result_id: 排课记录ID
+        new_day: 新的星期几(1-5)
+        new_period: 新的开始节次
+        force: 是否强制调整（忽略冲突）
+    """
+    # 获取当前记录
+    result = db.query(ScheduleResult).filter(ScheduleResult.id == result_id).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="排课记录不存在")
+    
+    if result.is_fixed:
+        raise HTTPException(status_code=400, detail="固定课不能调整，请在固定课管理中修改")
+    
+    # 检查冲突（除非强制）
+    if not force:
+        slots_info = get_available_slots(result_id, db)
+        target_slot = next(
+            (s for s in slots_info['available_slots'] if s['day'] == new_day and s['period'] == new_period),
+            None
+        )
+        if target_slot and target_slot['has_conflict']:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"目标时间槽存在冲突: {'; '.join(c['desc'] for c in target_slot['conflicts'][:3])}"
+            )
+    
+    # 获取同一教学班、同一类型、同一时间槽的所有记录（不同周次）
+    tc_results = db.query(ScheduleResult).filter(
+        ScheduleResult.session_id == result.session_id,
+        ScheduleResult.teaching_class_id == result.teaching_class_id,
+        ScheduleResult.is_lab == result.is_lab,
+        ScheduleResult.day == result.day,
+        ScheduleResult.period == result.period
+    ).all()
+    
+    # 更新所有记录的时间
+    for r in tc_results:
+        r.day = new_day
+        r.period = new_period
+    
+    db.commit()
+    
+    return {
+        'success': True,
+        'message': f"成功将 {result.course_name} 调整到 {['周一','周二','周三','周四','周五'][new_day-1]} 第{new_period}-{new_period + result.duration - 1}节",
+        'updated_count': len(tc_results)
+    }
+
+
 @router.delete("/results/{result_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除排课记录")
 def delete_schedule_result(result_id: int, db: Session = Depends(get_db)):
     """删除指定的排课记录"""
@@ -256,7 +507,7 @@ def export_schedule_excel(session_id: str, db: Session = Depends(get_db)):
     """
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
     from openpyxl.utils import get_column_letter
-    from ..models.db_models import AdminClass
+    from ..dbmodels.db_models import AdminClass
     
     # 验证会话存在
     session = db.query(ScheduleSession).filter(ScheduleSession.session_id == session_id).first()
