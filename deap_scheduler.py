@@ -143,8 +143,8 @@ def calculate_fitness_jit(
         for w_idx in range(semester_weeks_len):
             for d_idx in range(subgroup_grid.shape[2]):
                 day_schedule = subgroup_grid[sg_idx, w_idx, d_idx]
-                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 200 * soft_constraint_weight
-                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 200 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 10 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 10 * soft_constraint_weight
     return penalty,
 
 
@@ -157,7 +157,7 @@ def evaluate_individual_standalone(individual, generation_info, max_gen, **kwarg
 class DeapScheduler:
     def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences):
         self.MAX_LABS_SIMULTANEOUSLY = 2
-        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 1000, 0.9, 0.4, 10
+        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 100, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
         self.tc_to_sg_map, self.fixed_schedule = tc_to_sg_map, fixed_schedule
@@ -797,7 +797,7 @@ class DeapScheduler:
             (day_course_counter - 1)[day_course_counter > 1]) * 150 * soft_weight, np.count_nonzero(
             day_course_counter > 1), 150.0
 
-        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 200.0
+        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 10.0
         for sg_idx in range(subgroup_grid.shape[0]):
             for w_idx in range(semester_weeks_len):
                 for d_idx in range(subgroup_grid.shape[2]):
