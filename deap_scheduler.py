@@ -112,7 +112,7 @@ def calculate_fitness_jit(
         if val > max_labs_simultaneously:
             penalty += (val - max_labs_simultaneously) * 7000
 
-    time_diff_penalty_weight = 100.0
+    time_diff_penalty_weight = 300.0
     for c in range(num_course_groups):
         time_count = course_time_array[c, 1]
         if time_count <= 1: continue
@@ -130,21 +130,21 @@ def calculate_fitness_jit(
         gene = individual[i]
         _, d_idx, p_idx, _ = slot_decode_map[gene]
 
-        if undesired_masks[i, d_idx, p_idx]: penalty += 1000.0 * soft_constraint_weight
-        if preferred_masks[i, d_idx, p_idx]: penalty -= 50.0 * soft_constraint_weight
+        if undesired_masks[i, d_idx, p_idx]: penalty += 700.0 * soft_constraint_weight
+        if preferred_masks[i, d_idx, p_idx]: penalty -= 200.0 * soft_constraint_weight
 
-        if d_idx == 3: penalty += 30 * soft_constraint_weight
+        if d_idx == 3: penalty += 50 * soft_constraint_weight
         if p_idx == 0: penalty += 10 * soft_constraint_weight
 
     for val in day_course_counter.flat:
-        if val > 1: penalty += (val - 1) * 200 * soft_constraint_weight
+        if val > 1: penalty += (val - 1) * 150 * soft_constraint_weight
 
     for sg_idx in range(subgroup_grid.shape[0]):
         for w_idx in range(semester_weeks_len):
             for d_idx in range(subgroup_grid.shape[2]):
                 day_schedule = subgroup_grid[sg_idx, w_idx, d_idx]
-                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 70 * soft_constraint_weight
-                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 70 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 100 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 100 * soft_constraint_weight
     return penalty,
 
 
@@ -157,7 +157,7 @@ def evaluate_individual_standalone(individual, generation_info, max_gen, **kwarg
 class DeapScheduler:
     def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences):
         self.MAX_LABS_SIMULTANEOUSLY = 2
-        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 100, 0.9, 0.4, 10
+        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 1000, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
         self.tc_to_sg_map, self.fixed_schedule = tc_to_sg_map, fixed_schedule
@@ -740,7 +740,7 @@ class DeapScheduler:
             _, d_idx, p_idx, _ = slot_decode_map[gene]
             course_group_to_tasks[course_group_id].append((i, d_idx, p_idx))
 
-        time_diff_penalty, time_diff_count, time_diff_weight = 0, 0, 100.0
+        time_diff_penalty, time_diff_count, time_diff_weight = 0, 0, 300.0
         for c in range(num_course_groups):
             time_count = course_time_array[c, 1]
             if time_count <= 1: continue
@@ -761,7 +761,7 @@ class DeapScheduler:
                                           'times': times,
                                           'desc': f"{cohort_str}{task_info['course_name']} 分阶段时间不同: {' → '.join(times)}"})
 
-        undesired_slot_penalty, undesired_slot_count, undesired_weight = 0, 0, 1000.0
+        undesired_slot_penalty, undesired_slot_count, undesired_weight = 0, 0, 700.0
         for i, gene in enumerate(individual):
             _, d_idx, p_idx, _ = slot_decode_map[gene]
             if undesired_masks[i, d_idx, p_idx]:
@@ -772,7 +772,7 @@ class DeapScheduler:
                 undesired_slot_details.append({
                     'desc': f"{cohort_str}{task_info['course_name']} 在不希望的时间: 周{day_names[d_idx]}第{p_idx + 1}节"})
 
-        preferred_reward, preferred_count, preferred_weight = 0, 0, -50.0
+        preferred_reward, preferred_count, preferred_weight = 0, 0, -200.0
         for i, gene in enumerate(individual):
             _, d_idx, p_idx, _ = slot_decode_map[gene]
             if preferred_masks[i, d_idx, p_idx]:
@@ -783,7 +783,7 @@ class DeapScheduler:
                 preferred_details.append({
                     'desc': f"{cohort_str}{task_info['course_name']} 安排在偏好时间(奖励): 周{day_names[d_idx]}第{p_idx + 1}节"})
 
-        thursday_penalty, thursday_count, thursday_weight = 0, 0, 30.0
+        thursday_penalty, thursday_count, thursday_weight = 0, 0, 50.0
         for i, gene in enumerate(individual):
             _, d_idx, _, _ = slot_decode_map[gene]
             if d_idx == 3: thursday_penalty += thursday_weight * soft_weight; thursday_count += 1
@@ -794,10 +794,10 @@ class DeapScheduler:
             if p_idx == 0: first_period_penalty += first_period_weight * soft_weight; first_period_count += 1
 
         same_day_course_penalty, same_day_course_count, same_day_weight = np.sum(
-            (day_course_counter - 1)[day_course_counter > 1]) * 200 * soft_weight, np.count_nonzero(
-            day_course_counter > 1), 200.0
+            (day_course_counter - 1)[day_course_counter > 1]) * 150 * soft_weight, np.count_nonzero(
+            day_course_counter > 1), 150.0
 
-        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 70.0
+        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 100.0
         for sg_idx in range(subgroup_grid.shape[0]):
             for w_idx in range(semester_weeks_len):
                 for d_idx in range(subgroup_grid.shape[2]):
