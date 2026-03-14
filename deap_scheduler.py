@@ -143,8 +143,8 @@ def calculate_fitness_jit(
         for w_idx in range(semester_weeks_len):
             for d_idx in range(subgroup_grid.shape[2]):
                 day_schedule = subgroup_grid[sg_idx, w_idx, d_idx]
-                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 100 * soft_constraint_weight
-                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 100 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[:4]) == 4: penalty += 200 * soft_constraint_weight
+                if np.count_nonzero(day_schedule[4:8]) == 4: penalty += 200 * soft_constraint_weight
     return penalty,
 
 
@@ -797,7 +797,7 @@ class DeapScheduler:
             (day_course_counter - 1)[day_course_counter > 1]) * 150 * soft_weight, np.count_nonzero(
             day_course_counter > 1), 150.0
 
-        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 100.0
+        consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 200.0
         for sg_idx in range(subgroup_grid.shape[0]):
             for w_idx in range(semester_weeks_len):
                 for d_idx in range(subgroup_grid.shape[2]):
