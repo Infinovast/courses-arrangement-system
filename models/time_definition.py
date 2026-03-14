@@ -1,5 +1,4 @@
 # time_definition.py
-
 from dataclasses import dataclass
 from typing import List
 
@@ -10,7 +9,7 @@ SEMESTER_WEEKS = list(range(1, 17))
 FINAL_REVIEW_WEEK = 17
 ALL_WEEKS = SEMESTER_WEEKS + [FINAL_REVIEW_WEEK]
 
-# *** 核心修正：根据您的要求，补充所有自定义周次 ***
+# 自定义周次
 WEEKS_1_TO_14 = list(range(1, 15))
 WEEKS_5_TO_15 = list(range(5, 16))  # 毕业班32学时课程前期
 WEEKS_5_TO_16 = list(range(5, 17))
@@ -27,17 +26,7 @@ MORNING_PERIODS = [1, 2, 3, 4]
 AFTERNOOM_PERIODS = [5, 6, 7, 8]
 EVENING_PERIODS = [9, 10, 11]
 
-# 校本部教师时间窗口
-CAMPUS_TIME_WINDOW = {(day, period) for day in [1, 2] for period in PERIODS} | {(3, period) for period in MORNING_PERIODS}
-VALID_STARTS_MON_TUE_2H = {1, 3, 5, 7, 9}
-VALID_STARTS_MON_TUE_3H = {1, 2, 5, 9}
-VALID_STARTS_WED_2H = {1, 3}
-VALID_STARTS_WED_3H = {1, 2}
-CAMPUS_MAKEUP_WINDOW = {(day, period) for day in [1, 2] for period in PERIODS} | {(3, period) for period in MORNING_PERIODS}
-VALID_STARTS_MAKEUP_2H = {1, 3, 5, 7, 9}
-VALID_STARTS_MAKEUP_3H = {1, 2, 5, 9}
-
-# GA使用的通用开始节次
+# GA与通用使用的合法开始节次（所有天数适用）
 VALID_START_PERIODS_2_HOURS = {1, 3, 5, 7, 9}
 VALID_START_PERIODS_3_HOURS = {1, 2, 5, 9}
 

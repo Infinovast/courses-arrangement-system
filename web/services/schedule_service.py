@@ -84,13 +84,25 @@ class ScheduleService:
 
     def _convert_db_to_algo_objects(self, semester: str = "first") -> Tuple:
         """将数据库对象转换为算法所需的对象格式"""
-        # 1. 转换教师
+        # 1. 转换教师及其偏好
         db_teachers = self.db.query(Teacher).all()
+        db_preferences = self.db.query(TeacherPreference).all()
+
+        # 将偏好预先整理，以便注入给 AlgoTeacher 对象
+        pref_dict = defaultdict(lambda: {'pref': [], 'undes': []})
+        for pref in db_preferences:
+            if pref.preferred_slots:
+                pref_dict[pref.teacher_id]['pref'].extend([(s[0], s[1]) for s in pref.preferred_slots])
+            if pref.undesired_slots:
+                pref_dict[pref.teacher_id]['undes'].extend([(s[0], s[1]) for s in pref.undesired_slots])
+
         teachers_list = [
             AlgoTeacher(
                 id=f"T{t.id:02d}",
                 name=t.name,
-                is_campus_teacher=t.is_campus_teacher
+                is_campus_teacher=t.is_campus_teacher,
+                preferred_slots=pref_dict[t.id]['pref'],
+                undesired_slots=pref_dict[t.id]['undes']
             )
             for t in db_teachers
         ]
@@ -276,17 +288,8 @@ class ScheduleService:
                 'db_cohort_id': f.cohort_id
             })
 
-        # 7. 转换教师偏好
-        db_preferences = self.db.query(TeacherPreference).all()
+        # 7. 转换教师偏好格式 (移除硬编码)
         teacher_preferences = []
-
-        for t in teachers_list:
-            if t.is_campus_teacher:
-                teacher_preferences.append({
-                    'teacher_name': t.name,
-                    'course_name': None,
-                    'undesired_slots': [(3, p) for p in AFTERNOOM_PERIODS + EVENING_PERIODS] + [(4, -1), (5, -1)]
-                })
 
         for pref in db_preferences:
             teacher = self.db.query(Teacher).filter(Teacher.id == pref.teacher_id).first()
@@ -392,6 +395,7 @@ class ScheduleService:
                 best_detailed = []
                 best_fixed = []
                 best_failed_count = len(campus_tcs) + 1
+                best_failed_tcs = []
                 consecutive_same_failures = 0
                 last_failed_count = -1
 
@@ -410,6 +414,7 @@ class ScheduleService:
                         best_detailed = campus_detailed_results
                         best_fixed = campus_fixed_results
                         best_failed_count = current_failed_count
+                        best_failed_tcs = failed_campus_tcs
 
                     if not failed_campus_tcs:
                         break
@@ -424,6 +429,23 @@ class ScheduleService:
 
                 campus_detailed_results = best_detailed
                 campus_fixed_results = best_fixed
+
+                # 【修复核心阻断机制】：判定如果剩余时间段无法排满该老师所有课程时，直接终止
+                if best_failed_count > 0:
+                    failed_teacher_names = list(set([tc.teacher_name for tc in best_failed_tcs]))
+                    teacher_names_str = "、".join(failed_teacher_names)
+                    session.status = "failed"
+                    session.message = (
+                        f"排课终止！校本部老师【{teacher_names_str}】剔除不希望时间段后的剩余可用时间太少，"
+                        f"不足以排满其所有课程。请减少这些老师的“不希望时间段”设置后再试！"
+                    )
+                    self.db.commit()
+
+                    if campus_scheduler is not None:
+                        campus_scheduler.cleanup()
+
+                    # 直接返回 session_id，前端轮询接口时会拿到 failed 状态和上述 message 并弹窗提示
+                    return session_id
 
             if campus_scheduler is not None:
                 campus_scheduler.cleanup()
@@ -476,7 +498,7 @@ class ScheduleService:
 
         except Exception as e:
             session.status = "failed"
-            session.message = f"排课失败: {str(e)}"
+            session.message = f"{str(e)}"
             self.db.commit()
             import gc
             gc.collect()
@@ -625,7 +647,6 @@ class ScheduleService:
             if cohort_id:
                 admin_classes_db = self._admin_classes_by_cohort.get(cohort_id, [])
                 if specified_admin_class_ids:
-                    # 【核心修复】强制将其转为整型以防止与 JSON 返回的字符串 "1" 发生不匹配问题！
                     spec_ids = []
                     for x in specified_admin_class_ids:
                         try:

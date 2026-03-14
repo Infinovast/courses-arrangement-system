@@ -4,6 +4,7 @@ from models.class_group import Cohort, AdminClass
 from models.teacher import Teacher
 from models.room import Room
 
+
 def get_raw_data():
     """我将教学任务那个表格里的信息都定义到这个文件作为原始数据对象"""
     # 1. 教师定义所有参与排课的教师。
@@ -39,7 +40,7 @@ def get_raw_data():
         Cohort(major="大数据", grade=2), Cohort(major="物联网", grade=2),
         Cohort(major="大数据", grade=3), Cohort(major="物联网", grade=3)
     ]
-    cohorts_map = {c.id: c for c in cohorts_list}   # 创建一个从ID到对象的映射，方便后续查找
+    cohorts_map = {c.id: c for c in cohorts_list}  # 创建一个从ID到对象的映射，方便后续查找
     # 行政班（以大一为例，并假设每个专业每年级有2个行政班，每班40人）
     admin_classes = [
         AdminClass(id="AC_BD1_1", cohort=cohorts_map['大数据-1'], class_index=1, student_count=40),
@@ -141,7 +142,7 @@ def get_raw_data():
 
     # 5. 教师与课程关联
     teacher_course_map = {
-        "BD1_L01": "T04","BD1_L02": "T12","BD1_L03": "T14", "BD1_L04": "T16",
+        "BD1_L01": "T04", "BD1_L02": "T12", "BD1_L03": "T14", "BD1_L04": "T16",
         "TOT1_L01": "T10", "TOT1_L02": "T13", "TOT1_L03": "T15", "TOT1_L04": "T16",
         "BD2_L01": "T07", "BD2_L02": "T18", "BD2_L03": "T02", "BD2_L04": "T08", "BD2_L05": "T09",
         "TOT2_L01": "T07", "TOT2_L02": "T08", "TOT2_L03": "T06", "TOT2_L04": "T10", "TOT2_L05": "T01",
@@ -154,24 +155,7 @@ def get_raw_data():
 
     # 6. 教师偏好
     teacher_preferences = []
-    for teacher in teachers_list:
-        # 所有校本部教师只能在周一、周二全天和周三上午进行课程安排。
-        if teacher.is_campus_teacher:
-            teacher_preferences.append({
-                'teacher_name': teacher.name,
-                'course_name': None,
-                'undesired_slots': [(3, p) for p in AFTERNOOM_PERIODS + EVENING_PERIODS] + [(4, -1), (5, -1)]
-
-            })
-    '''# 添加其他老师的特定偏好
-    teacher_preferences.extend([
-        {'teacher_name': '刘寿强', 'course_name': '大数据安全与应用', 'preferred_slots': [(1, -1)]},
-        {'teacher_name': '王晨', 'course_name': '应用随机过程', 'preferred_slots': [(3, p) for p in AFTERNOOM_PERIODS],
-         'undesired_slots': [(1, p) for p in EVENING_PERIODS]}
-        # `undesired_slots`: 教师不希望上课的时间。
-        # `preferred_slots`: 教师偏好的上课时间。
-    ])
-    '''
+    # (修改点：去除了原先写死的校本部教师时间硬限制)
 
     # 7. 固定课程 (已安排的公共课)
     # 定义了每个 cohort 的子组应如何按比例分组打标签，因为有些相同固定课程可能分几个班在不同时间上课
@@ -185,24 +169,26 @@ def get_raw_data():
         }
     }
 
-    fixed_schedule=[
+    fixed_schedule = [
         # 大数据大一
         {'cohort_id': '大数据-1', 'course_name': '英语', 'teacher_name': '英语老师', 'duration': 2,
-        'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=2, period=1)},
+         'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=2, period=1)},
         {'cohort_id': '大数据-1', 'course_name': '思想道德与法治', 'teacher_name': '政治老师', 'duration': 3,
          'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=1, period=5)},
         {'cohort_id': '大数据-1', 'course_name': '军事理论与国家安全教育', 'teacher_name': '政治老师', 'duration': 2,
-        'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=3, period=1)},
+         'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=3, period=1)},
         {'cohort_id': '大数据-1', 'course_name': '大学日语', 'teacher_name': '日语老师', 'duration': 4,
          'week': DOUBLE_WEEKS, 'start_time': TimePoint(week=None, day=4, period=5)},
         {'cohort_id': '大数据-1', 'course_name': '大学体育', 'teacher_name': '体育老师', 'duration': 2,
-        'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=3, period=5)},
+         'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=3, period=5)},
         {'cohort_id': '大数据-1', 'course_name': '形势与政策', 'teacher_name': '形势与政策老师', 'duration': 2,
-        'week': [9, 10], 'start_time': TimePoint(week=None, day=3, period=9)},
+         'week': [9, 10], 'start_time': TimePoint(week=None, day=3, period=9)},
         # 假设大学物理公共课分成两个班不同时间上课
-        {'cohort_id': '大数据-1', 'group_tag': 'group_A', 'course_name': '大学物理', 'teacher_name': '物理老师', 'duration': 2,
-        'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=5, period=5)},
-        {'cohort_id': '大数据-1', 'group_tag': 'group_B', 'course_name': '大学物理', 'teacher_name': '物理老师','duration': 2,
+        {'cohort_id': '大数据-1', 'group_tag': 'group_A', 'course_name': '大学物理', 'teacher_name': '物理老师',
+         'duration': 2,
+         'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=5, period=5)},
+        {'cohort_id': '大数据-1', 'group_tag': 'group_B', 'course_name': '大学物理', 'teacher_name': '物理老师',
+         'duration': 2,
          'week': SEMESTER_WEEKS, 'start_time': TimePoint(week=None, day=4, period=1)},
         # 物联网大一
         {'cohort_id': '物联网-1', 'course_name': '大学英语', 'teacher_name': '英语老师', 'duration': 2,
@@ -246,5 +232,14 @@ def get_raw_data():
 
     ]
 
-    return teachers_list, rooms_list, cohorts_list, admin_classes, course_by_cohort, teacher_course_map, fixed_schedule, teacher_preferences, subgroup_pre_assignment
+    # 将偏好同步到 Teacher 对象，以便算法在单机运行时直接读取
+    for pref in teacher_preferences:
+        for t in teachers_list:
+            if t.name == pref.get('teacher_name'):
+                if 'preferred_slots' in pref:
+                    t.preferred_slots.extend(pref['preferred_slots'])
+                if 'undesired_slots' in pref:
+                    t.undesired_slots.extend(pref['undesired_slots'])
+                break
 
+    return teachers_list, rooms_list, cohorts_list, admin_classes, course_by_cohort, teacher_course_map, fixed_schedule, teacher_preferences, subgroup_pre_assignment

@@ -10,8 +10,8 @@ from models.time_definition import *
 class CampusScheduler:
     """
     校区预排课调度器。
-    主要处理那些有特定时间偏好（周一/周二全天，周三上午）的课程。
     这是一个启发式、确定性的调度器，旨在为遗传算法提供一个高质量的初始解或固定部分。
+    目前已支持读取教师的 preferred_slots 和 undesired_slots，实现动态时间分配及硬约束。
     """
     MAX_LABS_SIMULTANEOUSLY = 2
 
@@ -46,7 +46,7 @@ class CampusScheduler:
 
     def _initialize_grids_with_fixed_schedule(self):
         """
-        [关键修复] 用固定的公共课初始化资源占用网格。
+        用固定的公共课初始化资源占用网格。
         增加了适配 Web/单机 两套架构的精确子组索引分配。
         """
         for item in self.initial_fixed_schedule:
@@ -78,7 +78,8 @@ class CampusScheduler:
             # 2. [健壮修复]: 精确打满固定课程占用的子组
             sg_ids = item.get('subgroup_ids')
             if sg_ids is not None:
-                sg_indices_to_fill = [self.subgroup_to_idx.get(sg_id) for sg_id in sg_ids if self.subgroup_to_idx.get(sg_id) is not None]
+                sg_indices_to_fill = [self.subgroup_to_idx.get(sg_id) for sg_id in sg_ids if
+                                      self.subgroup_to_idx.get(sg_id) is not None]
             else:
                 sgs = self.cohort_sgs_map.get(cohort_id, [])
                 group_tag = item.get('group_tag', 'default')
@@ -151,14 +152,23 @@ class CampusScheduler:
         tasks_48h_plus = [t for t in normal_tasks if t not in tasks_16h and t not in tasks_32h]
         self._schedule_48h_plus_tasks(tasks_48h_plus, successful_placements, placed_task_ids)
 
-        all_tc_ids = {tc.id for tc in self.all_tcs_to_schedule}
-        successful_tc_ids = {key[0] for key in placed_task_ids}
-        failed_tc_ids = all_tc_ids - successful_tc_ids
+        req_task_count = defaultdict(int)
+        for t in all_tasks:
+            req_task_count[t['tc'].id] += 1
+
+        placed_task_count = defaultdict(int)
+        for task_id in placed_task_ids:
+            placed_task_count[task_id[0]] += 1
+
+        failed_tc_ids = set()
+        for tc_id, count in req_task_count.items():
+            if placed_task_count[tc_id] < count:
+                failed_tc_ids.add(tc_id)
+
         failed_tcs = [tc for tc in self.all_tcs_to_schedule if tc.id in failed_tc_ids]
 
         detailed_results, fixed_results = self._format_results(successful_placements)
         return detailed_results, fixed_results, failed_tcs
-
     def _schedule_preferred_pattern_tasks(self, tasks, successful_placements, placed_task_ids):
         week_pattern_map = {
             'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_15': WEEKS_5_TO_15, 'weeks_5_to_16': WEEKS_5_TO_16,
@@ -485,15 +495,12 @@ class CampusScheduler:
         w_indices = [w - 1 for w in weeks]
         total_occupied_slots = 0
 
+        # [关键修改]: 删除原来只查 Mon/Tue 及 Wed 上午的限制，动态适配校本部老师在全周的工作密度
         campus_time_slices = []
-        for day in [1, 2]:
+        for day in DAYS:
             d_idx = day - 1
             for period in range(1, len(PERIODS) + 1):
                 campus_time_slices.append((d_idx, period - 1))
-
-        d_idx_wed = 2
-        for period in [1, 2, 3, 4, 5]:
-            campus_time_slices.append((d_idx_wed, period - 1))
 
         if teacher_idx is not None:
             for d_idx, p_idx in campus_time_slices:
@@ -681,32 +688,98 @@ class CampusScheduler:
         return None
 
     def _get_valid_slots(self, duration, is_makeup=False, teacher_name=None, **kwargs):
+        """
+        [关键修改]
+        删除写死的时间窗口，替换为全周工作日排课。
+        强制剔除该老师的 undesired_slots（绝对不排）。
+        增加了针对 JSON 列表结构的精确解析！
+        """
         slots = []
+
+        # 1. 读取该教师的不希望时间(undesired_slots) 和 偏好时间(preferred_slots)
+        teacher = next((t for t in self.teachers if t.name == teacher_name), None)
+        undesired_periods = set()
+        preferred_periods = set()
+
+        if teacher:
+            if hasattr(teacher, 'undesired_slots') and teacher.undesired_slots:
+                for us in teacher.undesired_slots:
+                    # 添加对 list 的支持，否则 JSON 传来的 [[1, 1]] 无法被解析
+                    if isinstance(us, (tuple, list)) and len(us) >= 2:
+                        undesired_periods.add((us[0], us[1]))
+                    elif hasattr(us, 'day') and hasattr(us, 'period'):
+                        undesired_periods.add((us.day, us.period))
+                    elif isinstance(us, dict):
+                        undesired_periods.add((us.get('day'), us.get('period')))
+
+            if hasattr(teacher, 'preferred_slots') and teacher.preferred_slots:
+                for ps in teacher.preferred_slots:
+                    if isinstance(ps, (tuple, list)) and len(ps) >= 2:
+                        preferred_periods.add((ps[0], ps[1]))
+                    elif hasattr(ps, 'day') and hasattr(ps, 'period'):
+                        preferred_periods.add((ps.day, ps.period))
+                    elif isinstance(ps, dict):
+                        preferred_periods.add((ps.get('day'), ps.get('period')))
+
+        # 检测槽位是否被教师排斥 (增加对 period=-1 整天的支持)
+        def is_slot_allowed(day, start_period, dur):
+            if (day, -1) in undesired_periods:
+                return False
+            for p in range(start_period, start_period + dur):
+                if (day, p) in undesired_periods:
+                    return False
+            return True
+
         if is_makeup:
-            valid_starts = VALID_STARTS_MAKEUP_2H if duration == 2 else VALID_STARTS_MAKEUP_3H
-            for day, period in CAMPUS_MAKEUP_WINDOW:
-                if period in valid_starts: slots.append(TimeSlot(day, period, duration))
+            # 补课通常在周末或特定时间
+            v_starts_makeup_2h = globals().get('VALID_STARTS_MAKEUP_2H', [1, 3, 5, 8])
+            v_starts_makeup_3h = globals().get('VALID_STARTS_MAKEUP_3H', [1, 5, 8])
+            valid_starts = v_starts_makeup_2h if duration == 2 else v_starts_makeup_3h
+
+            makeup_window = globals().get('CAMPUS_MAKEUP_WINDOW', [(6, 1), (7, 1)])  # Dummy提取使用
+            makeup_days = list(set([d for d, p in makeup_window])) if 'CAMPUS_MAKEUP_WINDOW' in globals() else [6, 7]
+
+            for day in makeup_days:
+                for period in valid_starts:
+                    # 硬约束：即使是补课，也绝不允许排在不希望的时间
+                    if is_slot_allowed(day, period, duration):
+                        slots.append(TimeSlot(day, period, duration))
         else:
-            if duration == 2:
-                for day, period in CAMPUS_TIME_WINDOW:
-                    if day in [1, 2] and period in VALID_STARTS_MON_TUE_2H:
+            # 正常排课：允许排在全周任何合法的起始节次，仅剔除教师的不希望时间
+            v_starts_2h = globals().get('VALID_START_PERIODS_2_HOURS', [1, 3, 5, 7, 9])
+            v_starts_3h = globals().get('VALID_START_PERIODS_3_HOURS', [1, 2, 5, 9])
+
+            valid_starts = list(v_starts_2h) if duration == 2 else list(v_starts_3h)
+
+            for day in DAYS:
+                for period in valid_starts:
+                    if is_slot_allowed(day, period, duration):
                         slots.append(TimeSlot(day, period, duration))
-                    elif day == 3 and period in VALID_STARTS_WED_2H:
-                        slots.append(TimeSlot(day, period, duration))
-            elif duration == 3:
-                for day, period in CAMPUS_TIME_WINDOW:
-                    if day in [1, 2] and period in VALID_STARTS_MON_TUE_3H:
-                        slots.append(TimeSlot(day, period, duration))
-                    elif day == 3 and period in VALID_STARTS_WED_3H:
-                        slots.append(TimeSlot(day, period, duration))
+
         teacher_used_slots = {s for s, w in self.teacher_schedule.get(teacher_name, [])}
+        evening_periods = globals().get('EVENING_PERIODS', [10, 11, 12])
+
+        def is_slot_preferred(day, start_period, dur):
+            if (day, -1) in preferred_periods:
+                return True
+            for p in range(start_period, start_period + dur):
+                if (day, p) in preferred_periods:
+                    return True
+            return False
 
         def sort_key(slot):
+            is_pref = is_slot_preferred(slot.day, slot.period, slot.duration)
             is_teacher_preferred = slot in teacher_used_slots
             prioritize_evening = kwargs.get('prioritize_evening', False)
-            is_evening = slot.period in EVENING_PERIODS
-            return (not is_teacher_preferred, not is_evening if prioritize_evening else is_evening, slot.day,
-                    slot.period)
+            is_evening = slot.period in evening_periods
+
+            # 排序策略(不会破坏原本逻辑)：
+            # 1. preferred_slots 的时间会被置顶优先尝试
+            # 2. 已连排的时间段优先
+            # 3. 白天/晚上优先级
+            # 4. 按天数、节次顺序分配
+            return (not is_pref, not is_teacher_preferred, not is_evening if prioritize_evening else is_evening,
+                    slot.day, slot.period)
 
         return sorted(list(set(slots)), key=sort_key)
 
@@ -873,19 +946,20 @@ class CampusScheduler:
 
             all_weeks = sorted([int(w) for w in set(weeks_list)])
             if not all_weeks: continue
-            day_val, period_val, duration_val = int(slot.day), int(slot.period), int(slot.duration)
+            day_val, int_period_val, duration_val = int(slot.day), int(slot.period), int(slot.duration)
 
             for sg in tc.subgroups:
                 fixed.append({
-                    "cohort_id": sg.cohort.id, "group_tag": sg.fixed_schedule_tag, "course_name": tc.course.name,
+                    "cohort_id": sg.cohort.id, "group_tag": getattr(sg, 'fixed_schedule_tag', 'default'),
+                    "course_name": tc.course.name,
                     "teacher_name": tc.teacher_name, "duration": duration_val, "week": all_weeks,
-                    "start_time": TimePoint(week=None, day=day_val, period=period_val), "is_lab": bool(is_lab),
+                    "start_time": TimePoint(week=None, day=day_val, period=int_period_val), "is_lab": bool(is_lab),
                     "room_name": room_name if is_lab else None
                 })
             for w in all_weeks:
                 detailed.append({
                     "teaching_class_id": tc.id, "course_name": tc.course.name, "teacher_name": tc.teacher_name,
-                    "time_point": TimePoint(week=w, day=day_val, period=period_val), "duration": duration_val,
+                    "time_point": TimePoint(week=w, day=day_val, period=int_period_val), "duration": duration_val,
                     "room_name": room_name if room_name != "N/A" else None, "is_lab": bool(is_lab),
                     "is_combined": bool(tc.is_combined)
                 })

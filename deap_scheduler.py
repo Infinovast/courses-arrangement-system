@@ -1,4 +1,4 @@
-# deap_scheduler.py (已修复固定课程致盲问题、机房脱靶问题以及同一周多次课被错误惩罚问题)
+# deap_scheduler.py
 
 import random
 from collections import defaultdict
@@ -129,9 +129,10 @@ def calculate_fitness_jit(
     for i in range(len(individual)):
         gene = individual[i]
         _, d_idx, p_idx, _ = slot_decode_map[gene]
+
         if undesired_masks[i, d_idx, p_idx]: penalty += 1000.0 * soft_constraint_weight
-        has_preferred = np.any(preferred_masks[i])
-        if has_preferred and not preferred_masks[i, d_idx, p_idx]: penalty += 50 * soft_constraint_weight
+        if preferred_masks[i, d_idx, p_idx]: penalty -= 50.0 * soft_constraint_weight
+
         if d_idx == 3: penalty += 30 * soft_constraint_weight
         if p_idx == 0: penalty += 10 * soft_constraint_weight
 
@@ -159,7 +160,7 @@ class DeapScheduler:
         self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 100, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
-        self.tc_to_sg_map, self.fixed_schedule, self.teacher_preferences = tc_to_sg_map, fixed_schedule, teacher_preferences
+        self.tc_to_sg_map, self.fixed_schedule = tc_to_sg_map, fixed_schedule
 
         self._prepare_mappings()
         self._create_scheduling_tasks()
@@ -185,8 +186,6 @@ class DeapScheduler:
                 for session_idx in range(weekly_sessions):
                     task_req = req.copy()
                     task_req['session_idx'] = session_idx
-                    # 【核心修复】：细化时间一致性分组的粒度。
-                    # 以确保“同周的一周多次课”之间不再因为时间不同被错误触发巨额惩罚！
                     task_req['time_consistency_group_key'] = f"{tc.id}_{part_key}_{session_idx}"
                     self.tasks.append({'tc': tc, 'is_lab': is_lab, 'req': task_req})
 
@@ -263,8 +262,25 @@ class DeapScheduler:
                         for p_idx in p_indices:
                             fixed_slots_by_sg[sg_idx].add((w_idx, d_idx, p_idx))
 
+        # 新增用于查询教师属性的映射字典
+        teacher_objs = {t.name: t for t in self.teachers}
+
         for task in self.tasks:
             valid_genes, req, is_lab, tc = [], task['req'], task['is_lab'], task['tc']
+
+            teacher = teacher_objs.get(tc.teacher_name)
+            is_campus = teacher.is_campus_teacher if teacher else False
+
+            # 【完美解析 JSON 列表结构】兼容前端发来的二维数组
+            undesired = set()
+            if teacher and hasattr(teacher, 'undesired_slots') and teacher.undesired_slots:
+                for us in teacher.undesired_slots:
+                    if isinstance(us, (list, tuple)) and len(us) >= 2:
+                        undesired.add((us[0], us[1]))
+                    elif hasattr(us, 'day') and hasattr(us, 'period'):
+                        undesired.add((us.day, us.period))
+                    elif isinstance(us, dict):
+                        undesired.add((us.get('day'), us.get('period')))
 
             group_key = req['time_consistency_group_key']
             if group_key not in course_group_map: course_group_map[group_key] = len(course_group_map)
@@ -288,6 +304,21 @@ class DeapScheduler:
                 for d in DAYS:
                     for p in valid_starts:
                         if p + hours_per_block - 1 > len(PERIODS): continue
+
+                        # [校本部教师绝对硬约束处理]: 该阶段若在“不希望时间”内直接跳过添加合法基因的操作
+                        # 注意：支持判断如果是不希望一整天（period = -1）的情况
+                        is_blocked = False
+                        if is_campus:
+                            if (d, -1) in undesired:
+                                is_blocked = True
+                            else:
+                                for offset in range(hours_per_block):
+                                    if (d, p + offset) in undesired:
+                                        is_blocked = True
+                                        break
+                        if is_blocked:
+                            continue
+
                         d_0based, p_0based = d - 1, p - 1
 
                         has_fixed_conflict = False
@@ -309,6 +340,14 @@ class DeapScheduler:
                         for r_idx in room_options:
                             gene = slot_encode_map.get((p_idx_val, d_0based, p_0based, r_idx))
                             if gene is not None: valid_genes.append(gene)
+
+            # 【核心极强阻断拦截】：如果某门课的合法基因为 0，说明剔除此老师设置的极多“不希望时间段”后，时间根本不够排！
+            # 立即中断抛出异常，阻止算法向后进行使用强行随机函数安排该老师。
+            if not valid_genes:
+                raise ValueError(
+                    f"排课终止！校本部老师【{tc.teacher_name}】的课程【{tc.course.name}】无法排课！"
+                    f"原因：剔除该教师设定的“不希望时间段”后，没有任何可用的合法时间段容纳本课程。请减少设定的不希望时间。"
+                )
 
             self.task_to_valid_slots.append(np.array(valid_genes, dtype=np.int32))
 
@@ -395,21 +434,48 @@ class DeapScheduler:
 
         for i, task in enumerate(self.tasks):
             tc = task['tc']
-            for pref in self.teacher_preferences:
-                if pref['teacher_name'] == tc.teacher_name and (
-                        pref.get('course_name') is None or pref['course_name'] == tc.course.name):
-                    for day, period in pref.get('undesired_slots', []):
-                        d = day - 1
-                        if 1 <= day <= len(DAYS):
-                            p_range = range(len(PERIODS)) if period == -1 else [period - 1]
-                            for p in p_range:
-                                if 0 <= p < len(PERIODS): grids['undesired_masks'][i, d, p] = True
-                    for day, period in pref.get('preferred_slots', []):
-                        d = day - 1
-                        if 1 <= day <= len(DAYS):
-                            p_range = range(len(PERIODS)) if period == -1 else [period - 1]
-                            for p in p_range:
-                                if 0 <= p < len(PERIODS): grids['preferred_masks'][i, d, p] = True
+            duration = task['req'].get('hours_per_block', 2)
+            teacher = teacher_objs.get(tc.teacher_name)
+
+            if teacher:
+                undesired = set()
+                if hasattr(teacher, 'undesired_slots') and teacher.undesired_slots:
+                    for us in teacher.undesired_slots:
+                        if isinstance(us, (list, tuple)) and len(us) >= 2:
+                            undesired.add((us[0], us[1]))
+                        elif hasattr(us, 'day'):
+                            undesired.add((us.day, us.period))
+                        elif isinstance(us, dict):
+                            undesired.add((us.get('day'), us.get('period')))
+
+                preferred = set()
+                if hasattr(teacher, 'preferred_slots') and teacher.preferred_slots:
+                    for ps in teacher.preferred_slots:
+                        if isinstance(ps, (list, tuple)) and len(ps) >= 2:
+                            preferred.add((ps[0], ps[1]))
+                        elif hasattr(ps, 'day'):
+                            preferred.add((ps.day, ps.period))
+                        elif isinstance(ps, dict):
+                            preferred.add((ps.get('day'), ps.get('period')))
+
+                for d in DAYS:
+                    for p in PERIODS:
+                        if p + duration - 1 > len(PERIODS): continue
+
+                        d_idx, p_idx = d - 1, p - 1
+
+                        is_undesired = False
+                        is_preferred = False
+
+                        if (d, -1) in undesired: is_undesired = True
+                        if (d, -1) in preferred: is_preferred = True
+
+                        covered = [(d, p + offset) for offset in range(duration)]
+                        if any(cp in undesired for cp in covered): is_undesired = True
+                        if any(cp in preferred for cp in covered): is_preferred = True
+
+                        if is_undesired: grids['undesired_masks'][i, d_idx, p_idx] = True
+                        if is_preferred: grids['preferred_masks'][i, d_idx, p_idx] = True
 
         self.jit_params['tasks_meta'] = np.array(tasks_meta_list, dtype=np.int32)
         self.jit_params['task_to_sg_indices_flat'] = np.array(sg_indices_flat, dtype=np.int32)
@@ -666,7 +732,7 @@ class DeapScheduler:
             return {'course_name': tc.course.name, 'teacher_name': tc.teacher_name, 'cohort_name': cohort_name,
                     'class_name': tc.name if hasattr(tc, 'name') else str(tc.id), 'is_lab': task['is_lab']}
 
-        time_diff_details, undesired_slot_details, not_preferred_details, thursday_details, first_period_details, same_day_course_details, consecutive_4_details = [], [], [], [], [], [], []
+        time_diff_details, undesired_slot_details, preferred_details, thursday_details, first_period_details, same_day_course_details, consecutive_4_details = [], [], [], [], [], [], []
 
         course_group_to_tasks = defaultdict(list)
         for i, gene in enumerate(individual):
@@ -706,16 +772,16 @@ class DeapScheduler:
                 undesired_slot_details.append({
                     'desc': f"{cohort_str}{task_info['course_name']} 在不希望的时间: 周{day_names[d_idx]}第{p_idx + 1}节"})
 
-        not_preferred_penalty, not_preferred_count, preferred_weight = 0, 0, 50.0
+        preferred_reward, preferred_count, preferred_weight = 0, 0, -50.0
         for i, gene in enumerate(individual):
             _, d_idx, p_idx, _ = slot_decode_map[gene]
-            if np.any(preferred_masks[i]) and not preferred_masks[i, d_idx, p_idx]:
-                not_preferred_penalty += preferred_weight * soft_weight
-                not_preferred_count += 1
+            if preferred_masks[i, d_idx, p_idx]:
+                preferred_reward += preferred_weight * soft_weight
+                preferred_count += 1
                 task_info = get_task_info(i)
                 cohort_str = f"[{task_info['cohort_name']}] " if task_info['cohort_name'] else ''
-                not_preferred_details.append({
-                    'desc': f"{cohort_str}{task_info['course_name']} 未在偏好时间, 实际: 周{day_names[d_idx]}第{p_idx + 1}节"})
+                preferred_details.append({
+                    'desc': f"{cohort_str}{task_info['course_name']} 安排在偏好时间(奖励): 周{day_names[d_idx]}第{p_idx + 1}节"})
 
         thursday_penalty, thursday_count, thursday_weight = 0, 0, 30.0
         for i, gene in enumerate(individual):
@@ -747,8 +813,9 @@ class DeapScheduler:
             'undesired_slot': {'count': undesired_slot_count, 'penalty': round(undesired_slot_penalty, 2),
                                'weight': undesired_weight, 'desc': '安排在不希望的时间',
                                'items': undesired_slot_details},
-            'not_preferred': {'count': not_preferred_count, 'penalty': round(not_preferred_penalty, 2),
-                              'weight': preferred_weight, 'desc': '未安排在偏好时间', 'items': not_preferred_details},
+            'preferred_reward': {'count': preferred_count, 'penalty': round(preferred_reward, 2),
+                                 'weight': preferred_weight, 'desc': '安排在偏好时间(奖励)',
+                                 'items': preferred_details},
             'thursday': {'count': thursday_count, 'penalty': round(thursday_penalty, 2), 'weight': thursday_weight,
                          'desc': '周四排课'},
             'first_period': {'count': first_period_count, 'penalty': round(first_period_penalty, 2),
