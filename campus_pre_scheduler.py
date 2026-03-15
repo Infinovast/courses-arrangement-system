@@ -1,4 +1,5 @@
 # campus_pre_scheduler.py
+
 import numpy as np
 from collections import defaultdict
 from itertools import cycle, combinations
@@ -66,8 +67,9 @@ class CampusScheduler:
             w_indices = [w - 1 for w in weeks if 1 <= w <= len(ALL_WEEKS)]
             p_indices = list(range(p_start_idx, p_start_idx + duration))
 
-            if not w_indices or not (0 <= d_idx < len(DAYS)) or not (
-                    0 <= p_start_idx < len(PERIODS) and p_indices[-1] < len(PERIODS)):
+            # 【防越界补丁】 避免越界导致静默丢失和跳过
+            if not w_indices or not (0 <= d_idx < len(DAYS)) or not p_indices or p_indices[-1] >= len(
+                    PERIODS) or p_start_idx < 0:
                 continue
 
             # 1. 标记教师占用
@@ -169,6 +171,7 @@ class CampusScheduler:
 
         detailed_results, fixed_results = self._format_results(successful_placements)
         return detailed_results, fixed_results, failed_tcs
+
     def _schedule_preferred_pattern_tasks(self, tasks, successful_placements, placed_task_ids):
         week_pattern_map = {
             'weeks_1_to_14': WEEKS_1_TO_14, 'weeks_5_to_15': WEEKS_5_TO_15, 'weeks_5_to_16': WEEKS_5_TO_16,
@@ -495,7 +498,6 @@ class CampusScheduler:
         w_indices = [w - 1 for w in weeks]
         total_occupied_slots = 0
 
-        # [关键修改]: 删除原来只查 Mon/Tue 及 Wed 上午的限制，动态适配校本部老师在全周的工作密度
         campus_time_slices = []
         for day in DAYS:
             d_idx = day - 1
@@ -688,15 +690,8 @@ class CampusScheduler:
         return None
 
     def _get_valid_slots(self, duration, is_makeup=False, teacher_name=None, **kwargs):
-        """
-        [关键修改]
-        删除写死的时间窗口，替换为全周工作日排课。
-        强制剔除该老师的 undesired_slots（绝对不排）。
-        增加了针对 JSON 列表结构的精确解析！
-        """
         slots = []
 
-        # 1. 读取该教师的不希望时间(undesired_slots) 和 偏好时间(preferred_slots)
         teacher = next((t for t in self.teachers if t.name == teacher_name), None)
         undesired_periods = set()
         preferred_periods = set()
@@ -704,7 +699,6 @@ class CampusScheduler:
         if teacher:
             if hasattr(teacher, 'undesired_slots') and teacher.undesired_slots:
                 for us in teacher.undesired_slots:
-                    # 添加对 list 的支持，否则 JSON 传来的 [[1, 1]] 无法被解析
                     if isinstance(us, (tuple, list)) and len(us) >= 2:
                         undesired_periods.add((us[0], us[1]))
                     elif hasattr(us, 'day') and hasattr(us, 'period'):
@@ -721,8 +715,18 @@ class CampusScheduler:
                     elif isinstance(ps, dict):
                         preferred_periods.add((ps.get('day'), ps.get('period')))
 
-        # 检测槽位是否被教师排斥 (增加对 period=-1 整天的支持)
+        def is_slot_preferred(day, start_period, dur):
+            if (day, -1) in preferred_periods:
+                return True
+            for p in range(start_period, start_period + dur):
+                if (day, p) in preferred_periods:
+                    return True
+            return False
+
         def is_slot_allowed(day, start_period, dur):
+            # 偏好覆盖不希望防矛盾配置
+            if is_slot_preferred(day, start_period, dur):
+                return True
             if (day, -1) in undesired_periods:
                 return False
             for p in range(start_period, start_period + dur):
@@ -731,21 +735,18 @@ class CampusScheduler:
             return True
 
         if is_makeup:
-            # 补课通常在周末或特定时间
             v_starts_makeup_2h = globals().get('VALID_STARTS_MAKEUP_2H', [1, 3, 5, 8])
             v_starts_makeup_3h = globals().get('VALID_STARTS_MAKEUP_3H', [1, 5, 8])
             valid_starts = v_starts_makeup_2h if duration == 2 else v_starts_makeup_3h
 
-            makeup_window = globals().get('CAMPUS_MAKEUP_WINDOW', [(6, 1), (7, 1)])  # Dummy提取使用
+            makeup_window = globals().get('CAMPUS_MAKEUP_WINDOW', [(6, 1), (7, 1)])
             makeup_days = list(set([d for d, p in makeup_window])) if 'CAMPUS_MAKEUP_WINDOW' in globals() else [6, 7]
 
             for day in makeup_days:
                 for period in valid_starts:
-                    # 硬约束：即使是补课，也绝不允许排在不希望的时间
                     if is_slot_allowed(day, period, duration):
                         slots.append(TimeSlot(day, period, duration))
         else:
-            # 正常排课：允许排在全周任何合法的起始节次，仅剔除教师的不希望时间
             v_starts_2h = globals().get('VALID_START_PERIODS_2_HOURS', [1, 3, 5, 7, 9])
             v_starts_3h = globals().get('VALID_START_PERIODS_3_HOURS', [1, 2, 5, 9])
 
@@ -759,26 +760,14 @@ class CampusScheduler:
         teacher_used_slots = {s for s, w in self.teacher_schedule.get(teacher_name, [])}
         evening_periods = globals().get('EVENING_PERIODS', [10, 11, 12])
 
-        def is_slot_preferred(day, start_period, dur):
-            if (day, -1) in preferred_periods:
-                return True
-            for p in range(start_period, start_period + dur):
-                if (day, p) in preferred_periods:
-                    return True
-            return False
-
         def sort_key(slot):
             is_pref = is_slot_preferred(slot.day, slot.period, slot.duration)
             is_teacher_preferred = slot in teacher_used_slots
             prioritize_evening = kwargs.get('prioritize_evening', False)
             is_evening = slot.period in evening_periods
-
-            # 排序策略(不会破坏原本逻辑)：
-            # 1. preferred_slots 的时间会被置顶优先尝试
-            # 2. 已连排的时间段优先
-            # 3. 白天/晚上优先级
-            # 4. 按天数、节次顺序分配
-            return (not is_pref, not is_teacher_preferred, not is_evening if prioritize_evening else is_evening,
+            # 权重赋予：0 表示最优先，偏好排第一优先级
+            return (0 if is_pref else 1, 0 if is_teacher_preferred else 1,
+                    not is_evening if prioritize_evening else is_evening,
                     slot.day, slot.period)
 
         return sorted(list(set(slots)), key=sort_key)
