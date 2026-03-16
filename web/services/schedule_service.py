@@ -428,7 +428,8 @@ class ScheduleService:
                 scheduler = DeapScheduler(
                     teachers=teachers_list, rooms=rooms_list, subgroups=all_subgroups,
                     teaching_classes=other_tcs, tc_to_sg_map=tc_to_sg_map,
-                    fixed_schedule=updated_fixed_schedule, teacher_preferences=teacher_preferences
+                    fixed_schedule=updated_fixed_schedule, teacher_preferences=teacher_preferences,
+                    use_ql_optimizer=True
                 )
                 success = scheduler.solve(pool)
                 ga_results = scheduler.get_results()

@@ -8,6 +8,12 @@ from campus_pre_scheduler import CampusScheduler
 from deap_scheduler import DeapScheduler
 from result_parser import export_schedule_to_excel
 
+# ===== Q-Learning优化开关 =====
+# 设置为True启用Q-learning动态权重优化
+# 设置为False使用原始的线性权重策略
+USE_QL_OPTIMIZER = True
+# ==============================
+
 
 def main():
     global campus_detailed_results, campus_fixed_results
@@ -24,7 +30,6 @@ def main():
         data_module = importlib.import_module(module_name)
     except ImportError as e:
         print(f"错误：无法找到数据模块文件 {module_name}.py。 ({e})")
-        import sys
         sys.exit(1)
 
     start_time = time.time()
@@ -55,34 +60,13 @@ def main():
 
     print("\n--- 阶段3: 为校本部教师进行确定性排课 ---")
 
-    best_detailed = []
-    best_fixed = []
+    for i in range(100):
+        campus_scheduler = CampusScheduler(campus_tcs, all_subgroups, tc_to_sg_map, teachers_list, rooms_list,
+                                       fixed_schedule)
+        campus_detailed_results, campus_fixed_results, failed_campus_tcs = campus_scheduler.schedule()
+        if failed_campus_tcs==[]:
+            break
 
-    if campus_tcs:
-        best_failed_tcs = []
-        for i in range(100):
-            campus_scheduler = CampusScheduler(campus_tcs, all_subgroups, tc_to_sg_map, teachers_list, rooms_list,
-                                               fixed_schedule)
-            campus_detailed_results, campus_fixed_results, failed_campus_tcs = campus_scheduler.schedule()
-            if i == 0 or len(failed_campus_tcs) < len(best_failed_tcs):
-                best_failed_tcs = failed_campus_tcs
-                best_detailed = campus_detailed_results
-                best_fixed = campus_fixed_results
-            if failed_campus_tcs == []:
-                break
-
-        # 绝对阻断机制
-        if best_failed_tcs:
-            failed_teacher_names = list(set([tc.teacher_name for tc in best_failed_tcs]))
-            teacher_names_str = "、".join(failed_teacher_names)
-            print("\n❌ 致命错误：排课终止！")
-            print(f"校本部老师【{teacher_names_str}】剔除不希望时间段后的剩余可用时间段太少，不足以排满其所有课程。")
-            print("请调整这些老师的“不希望时间段”数据后再试！")
-            import sys
-            sys.exit(1)
-
-    campus_detailed_results = best_detailed
-    campus_fixed_results = best_fixed
 
     print("\n--- 阶段4: 为其他教师及预排失败的课程进行遗传算法排课 ---")
     ga_tcs_to_schedule = other_tcs
@@ -98,7 +82,8 @@ def main():
             teaching_classes=ga_tcs_to_schedule,
             tc_to_sg_map=tc_to_sg_map,
             fixed_schedule=updated_fixed_schedule,
-            teacher_preferences=teacher_preferences
+            teacher_preferences=teacher_preferences,
+            use_ql_optimizer=USE_QL_OPTIMIZER  # 传入Q-learning开关
         )
         success = scheduler.solve(pool)
 
@@ -121,6 +106,7 @@ def main():
             print("成功找到高质量解！")
         else:
             print(f"警告：未找到完美解。最佳方案的惩罚分数为: {best_fitness}")
+
 
         export_schedule_to_excel(
             solver_results=final_schedule_details,

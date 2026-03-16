@@ -1,5 +1,3 @@
-# deap_scheduler.py
-
 import random
 from collections import defaultdict
 import numpy as np
@@ -8,6 +6,20 @@ from functools import partial
 import copy
 from models.time_definition import *
 import numba
+
+# 导入Q-learning优化器（适配项目结构）
+try:
+    # 优先从当前目录导入，如果失败则尝试从上级目录
+    import sys
+    import os
+
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from ql_scheduler import QLearningWeightOptimizer
+
+    QL_AVAILABLE = True
+except ImportError:
+    QL_AVAILABLE = False
+    print("警告：无法导入Q-learning模块，将使用原始算法")
 
 
 @numba.jit(nopython=True, fastmath=True)
@@ -29,7 +41,8 @@ def calculate_fitness_jit(
         max_labs_simultaneously,
         current_generation,
         max_generations,
-        semester_weeks_len
+        semester_weeks_len,
+        soft_constraint_weight  # 动态软约束权重参数
 ):
     """计算惩罚分数 - Fitness function"""
     slot_decode_map = flat_slot_decode_map.reshape(shape_slot_decode_map)
@@ -99,6 +112,7 @@ def calculate_fitness_jit(
 
     penalty = 0.0
 
+    # 硬约束惩罚
     for grid in (teacher_grid, subgroup_grid):
         for val in grid.flat:
             if val > 1:
@@ -112,6 +126,7 @@ def calculate_fitness_jit(
         if val > max_labs_simultaneously:
             penalty += (val - max_labs_simultaneously) * 7000
 
+    # 课程时间一致性惩罚
     time_diff_penalty_weight = 100.0
     for c in range(num_course_groups):
         time_count = course_time_array[c, 1]
@@ -123,9 +138,7 @@ def calculate_fitness_jit(
             if current_d != base_d: penalty += time_diff_penalty_weight * abs(current_d - base_d)
             if current_p != base_p: penalty += time_diff_penalty_weight * abs(current_p - base_p)
 
-    progress = current_generation / max_generations
-    soft_constraint_weight = 0.1 + progress * 0.9
-
+    # 软约束惩罚（使用动态权重）
     for i in range(len(individual)):
         gene = individual[i]
         _, d_idx, p_idx, _ = slot_decode_map[gene]
@@ -148,19 +161,51 @@ def calculate_fitness_jit(
     return penalty,
 
 
-def evaluate_individual_standalone(individual, generation_info, max_gen, **kwargs):
+def evaluate_individual_standalone(individual, generation_info, max_gen, current_weight_holder=None, **kwargs):
+    """
+    评估单个个体的适应度
+    """
     current_gen = generation_info[0]
-    return calculate_fitness_jit(np.array(individual, dtype=np.int32), current_generation=current_gen,
-                                 max_generations=max_gen, **kwargs)
+
+    # 获取软约束权重：优先使用Q-Learning动态权重，否则回退到原始静态策略
+    if current_weight_holder is not None and len(current_weight_holder) > 0:
+        soft_constraint_weight = current_weight_holder[0]
+    else:
+        # 原始静态权重逻辑
+        progress = current_gen / max_gen
+        soft_constraint_weight = 0.1 + progress * 0.9
+
+    return calculate_fitness_jit(
+        np.array(individual, dtype=np.int32),
+        current_generation=current_gen,
+        max_generations=max_gen,
+        soft_constraint_weight=soft_constraint_weight,
+        **kwargs
+    )
 
 
 class DeapScheduler:
-    def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences):
+    def __init__(self, teachers, rooms, subgroups, teaching_classes, tc_to_sg_map, fixed_schedule, teacher_preferences,
+                 use_ql_optimizer=False):
         self.MAX_LABS_SIMULTANEOUSLY = 2
-        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 1500, 0.9, 0.4, 10
+        self.POP_SIZE, self.MAX_GEN, self.CXPB, self.MUTPB, self.HALL_OF_FAME_SIZE = 1000, 1000, 0.9, 0.4, 10
         self.generation_info = [0]
         self.teachers, self.rooms, self.subgroups, self.teaching_classes = teachers, rooms, subgroups, teaching_classes
         self.tc_to_sg_map, self.fixed_schedule = tc_to_sg_map, fixed_schedule
+
+        # Q-Learning初始化
+        self.use_ql_optimizer = use_ql_optimizer and QL_AVAILABLE
+        if self.use_ql_optimizer:
+            self.ql_optimizer = QLearningWeightOptimizer()
+            self.current_weight_holder = [0.1]  # 动态权重容器
+            print("已启用Q-learning动态权重优化器")
+        else:
+            self.ql_optimizer = None
+            self.current_weight_holder = None
+            if use_ql_optimizer and not QL_AVAILABLE:
+                print("Q-learning模块不可用，将使用原始线性权重策略")
+            else:
+                print("使用原始线性权重策略")
 
         self._prepare_mappings()
         self._create_scheduling_tasks()
@@ -319,9 +364,6 @@ class DeapScheduler:
                                     if has_fixed_conflict: break
                             if has_fixed_conflict: break
 
-                        if has_fixed_conflict:
-                            continue
-
                         room_options = self.lab_room_indices if is_lab else [-1]
                         for r_idx in room_options:
                             gene = slot_encode_map.get((p_idx_val, d_0based, p_0based, r_idx))
@@ -472,8 +514,21 @@ class DeapScheduler:
 
         self.toolbox.register("individual", tools.initIterate, creator.Individual, self.toolbox.individual_generator)
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
-        self.toolbox.register("evaluate", partial(evaluate_individual_standalone, generation_info=self.generation_info,
-                                                  max_gen=self.MAX_GEN, **self.jit_params))
+
+        # 注册评估函数（传递Q-learning权重容器）
+        eval_kwargs = {
+            'generation_info': self.generation_info,
+            'max_gen': self.MAX_GEN,
+            **self.jit_params
+        }
+        if self.current_weight_holder is not None:
+            eval_kwargs['current_weight_holder'] = self.current_weight_holder
+
+        self.toolbox.register(
+            "evaluate",
+            partial(evaluate_individual_standalone, **eval_kwargs)
+        )
+
         self.toolbox.register("mate", tools.cxTwoPoint)
         self.toolbox.register("mutate", self.mutate_individual, indpb=0.1)
         self.toolbox.register("select", tools.selTournament, tournsize=3)
@@ -493,6 +548,11 @@ class DeapScheduler:
             self.best_individual = []
             self.best_fitness = 0.0
             return True
+
+        # 启动Q-learning episode
+        if self.use_ql_optimizer:
+            self.ql_optimizer.start_episode()
+
         self.toolbox.register("map", pool.map)
         pop, hof = self.toolbox.population(n=self.POP_SIZE), tools.HallOfFame(self.HALL_OF_FAME_SIZE)
         stats = tools.Statistics(lambda ind: ind.fitness.values[0])
@@ -504,8 +564,16 @@ class DeapScheduler:
         def custom_log(pop, gen, stats, hof):
             self.generation_info[0] = gen
             record = stats.compile(pop)
-            print(f"Gen: {gen:<5} Max: {record['max']:<12.2f} Min: {record['min']:<12.2f}")
+            log_str = f"Gen: {gen:<5} Max: {record['max']:<12.2f} Min: {record['min']:<12.2f}"
 
+            # 添加Q-learning日志
+            if self.use_ql_optimizer:
+                ql_stats = self.ql_optimizer.get_statistics()
+                log_str += f" | QL-ε: {ql_stats['epsilon']:.3f} QL-W: {ql_stats['current_weight']:.1f}"
+
+            print(log_str)
+
+        # 初始评估
         invalid_ind = [ind for ind in pop if not ind.fitness.valid]
         fitnesses = self.toolbox.map(self.toolbox.evaluate, invalid_ind)
         for ind, fit in zip(invalid_ind, fitnesses):
@@ -514,6 +582,12 @@ class DeapScheduler:
         custom_log(pop, 0, stats, hof)
 
         for gen in range(1, self.MAX_GEN + 1):
+            # 每代更新Q-learning权重
+            if self.use_ql_optimizer and hof:
+                best_penalty = hof[0].fitness.values[0]
+                new_weight = self.ql_optimizer.get_soft_constraint_weight(gen, self.MAX_GEN, best_penalty)
+                self.current_weight_holder[0] = new_weight
+
             offspring = self.toolbox.select(pop, len(pop))
             offspring = algorithms.varAnd(offspring, self.toolbox, self.CXPB, self.MUTPB)
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
@@ -523,6 +597,7 @@ class DeapScheduler:
             hof.update(offspring)
             pop[:] = offspring
 
+            # 精英保留
             worst_in_pop_indices = sorted(range(len(pop)), key=lambda k: pop[k].fitness, reverse=True)
             for i in range(min(len(worst_in_pop_indices), self.HALL_OF_FAME_SIZE)):
                 pop[worst_in_pop_indices[i]] = copy.deepcopy(hof[i])
@@ -530,18 +605,34 @@ class DeapScheduler:
             if gen % 10 == 0:
                 custom_log(pop, gen, stats, hof)
 
+        # 结束Q-learning episode
+        if self.use_ql_optimizer:
+            self.ql_optimizer.end_episode()
+
+        # 最终评估
         final_eval_info = [self.MAX_GEN]
         final_toolbox = base.Toolbox()
         final_toolbox.register("map", pool.map)
-        final_toolbox.register("evaluate", partial(evaluate_individual_standalone, generation_info=final_eval_info,
-                                                   max_gen=self.MAX_GEN, **self.jit_params))
+
+        final_eval_kwargs = {
+            'generation_info': final_eval_info,
+            'max_gen': self.MAX_GEN, **self.jit_params
+        }
+        if self.current_weight_holder is not None:
+            final_eval_kwargs['current_weight_holder'] = self.current_weight_holder
+
+        final_toolbox.register(
+            "evaluate",
+            partial(evaluate_individual_standalone, **final_eval_kwargs)
+        )
+
         final_fitnesses = final_toolbox.map(final_toolbox.evaluate, hof)
         for ind, fit in zip(hof, final_fitnesses):
             ind.fitness.values = fit
         hof.update(hof)
 
         self.best_individual, self.best_fitness = hof[0], hof[0].fitness.values[0]
-        print(f"\nGA 演化完成。最优解的最终惩罚值 (所有约束权重最大): {self.best_fitness:.2f}")
+        print(f"\nGA 演化完成。最优解的最终惩罚值: {self.best_fitness:.2f}")
 
         self.penalty_details = self._analyze_penalty_details(self.best_individual)
 
@@ -629,6 +720,7 @@ class DeapScheduler:
             'subgroup_conflicts': [], 'room_conflicts': [], 'summary': {}
         }
 
+        # 硬约束分析
         teacher_conflict_count, teacher_conflict_penalty = 0, 0
         for t_idx, w_idx, d_idx, p_idx in np.argwhere(teacher_grid > 1):
             val = teacher_grid[t_idx, w_idx, d_idx, p_idx]
@@ -682,6 +774,7 @@ class DeapScheduler:
                               'desc': '机房时间冲突'},
         }
 
+        # 软约束分析
         soft_weight, day_names = 1.0, ['一', '二', '三', '四', '五']
 
         def get_task_info(task_idx):
@@ -694,7 +787,8 @@ class DeapScheduler:
             return {'course_name': tc.course.name, 'teacher_name': tc.teacher_name, 'cohort_name': cohort_name,
                     'class_name': tc.name if hasattr(tc, 'name') else str(tc.id), 'is_lab': task['is_lab']}
 
-        time_diff_details, undesired_slot_details, preferred_details, thursday_details, first_period_details, same_day_course_details, consecutive_4_details = [], [], [], [], [], [], []
+        time_diff_details, undesired_slot_details, preferred_details = [], [], []
+        thursday_details, first_period_details, same_day_course_details, consecutive_4_details = [], [], [], []
 
         course_group_to_tasks = defaultdict(list)
         for i, gene in enumerate(individual):
@@ -702,6 +796,7 @@ class DeapScheduler:
             _, d_idx, p_idx, _ = slot_decode_map[gene]
             course_group_to_tasks[course_group_id].append((i, d_idx, p_idx))
 
+        # 时间一致性分析
         time_diff_penalty, time_diff_count, time_diff_weight = 0, 0, 100.0
         for c in range(num_course_groups):
             time_count = course_time_array[c, 1]
@@ -710,7 +805,7 @@ class DeapScheduler:
             task_indices = course_group_to_tasks.get(c, [])
             if not task_indices: continue
 
-            # 【重要过滤】：跳过校本部老师的软约束分析记录
+            # 跳过校本部老师
             is_campus_teacher = tasks_meta[task_indices[0][0], 4] == 1
             if is_campus_teacher: continue
 
@@ -730,11 +825,12 @@ class DeapScheduler:
                                           'times': times,
                                           'desc': f"{cohort_str}{task_info['course_name']} 分阶段时间不同: {' → '.join(times)}"})
 
+        # 不希望的时间段
         undesired_slot_penalty, undesired_slot_count, undesired_weight = 0, 0, 1000.0
         for i, gene in enumerate(individual):
             _, d_idx, p_idx, _ = slot_decode_map[gene]
 
-            # 【重要过滤】：全面防泄漏校本部偏好被软判定抓取
+            # 跳过校本部老师
             is_campus_teacher = tasks_meta[i, 4] == 1
             if is_campus_teacher: continue
 
@@ -746,10 +842,12 @@ class DeapScheduler:
                 undesired_slot_details.append({
                     'desc': f"{cohort_str}{task_info['course_name']} 在不希望的时间: 周{day_names[d_idx]}第{p_idx + 1}节"})
 
+        # 偏好时间段
         preferred_reward, preferred_count, preferred_weight = 0, 0, -50.0
         for i, gene in enumerate(individual):
             _, d_idx, p_idx, _ = slot_decode_map[gene]
 
+            # 跳过校本部老师
             is_campus_teacher = tasks_meta[i, 4] == 1
             if is_campus_teacher: continue
 
@@ -761,6 +859,7 @@ class DeapScheduler:
                 preferred_details.append({
                     'desc': f"{cohort_str}{task_info['course_name']} 安排在偏好时间(奖励): 周{day_names[d_idx]}第{p_idx + 1}节"})
 
+        # 周四排课
         thursday_penalty, thursday_count, thursday_weight = 0, 0, 30.0
         for i, gene in enumerate(individual):
             is_campus_teacher = tasks_meta[i, 4] == 1
@@ -769,6 +868,7 @@ class DeapScheduler:
             _, d_idx, _, _ = slot_decode_map[gene]
             if d_idx == 3: thursday_penalty += thursday_weight * soft_weight; thursday_count += 1
 
+        # 第一节课
         first_period_penalty, first_period_count, first_period_weight = 0, 0, 10.0
         for i, gene in enumerate(individual):
             is_campus_teacher = tasks_meta[i, 4] == 1
@@ -777,10 +877,12 @@ class DeapScheduler:
             _, _, p_idx, _ = slot_decode_map[gene]
             if p_idx == 0: first_period_penalty += first_period_weight * soft_weight; first_period_count += 1
 
+        # 同天同课多次
         same_day_course_penalty, same_day_course_count, same_day_weight = np.sum(
             (day_course_counter - 1)[day_course_counter > 1]) * 200 * soft_weight, np.count_nonzero(
             day_course_counter > 1), 200.0
 
+        # 连续4节课
         consecutive_4_penalty, consecutive_4_count, consecutive_weight = 0, 0, 10.0
         for sg_idx in range(subgroup_grid.shape[0]):
             for w_idx in range(semester_weeks_len):
@@ -812,6 +914,7 @@ class DeapScheduler:
                               'weight': consecutive_weight, 'desc': '连续4节课'},
         }
 
+        # 汇总
         hard_total = teacher_conflict_penalty + subgroup_conflict_penalty + room_conflict_penalty
         soft_total = sum(v['penalty'] for v in details['soft_constraints'].values())
 
@@ -828,7 +931,10 @@ class DeapScheduler:
         if hasattr(self, 'task_to_valid_slots'): self.task_to_valid_slots.clear()
         if hasattr(self, 'slot_decode_map_list'): self.slot_decode_map_list.clear()
         if hasattr(self, 'tasks'): self.tasks.clear()
-        if hasattr(self, 'toolbox'): self.toolbox.unregister("map"); del self.toolbox
+        if hasattr(self, 'toolbox'):
+            if 'map' in self.toolbox.__dict__:
+                self.toolbox.unregister("map")
+            del self.toolbox
         import gc
         gc.collect()
 
