@@ -1,4 +1,4 @@
-# 排课系统 (Paike - Course Scheduling System)
+# 排课系统 (Courses Arrangement Management System)
 
 一个基于遗传算法和确定性预排课策略的智能高校排课系统，支持Web界面管理、API调用和手动课程调整。
 

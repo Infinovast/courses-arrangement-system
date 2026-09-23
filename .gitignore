@@ -3,16 +3,19 @@
 /build/
 !gradle/wrapper/gradle-wrapper.jar
  
-target/			#过滤target文件夹下的内容
+target/
 !.mvn/wrapper/maven-wrapper.jar
  
 # IntelliJ IDEA
-.idea
+.idea/
 *.iws
 *.iml
 *.ipr
  
 # Vue
-**/node_modules #过滤node_modules文件夹
+**/node_modules
 **/.idea
 dist
+
+# Python
+**/__pycache__/
